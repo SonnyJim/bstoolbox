@@ -27,6 +27,7 @@
 #define BLUESCSI_TOOLBOX_COUNT_CDS      0xDA
 #define OPEN_RETRO_SCSI_TOO_MANY_FILES 0x0001
 
+#define MAX_FILES 100 //TODO Hahahahaha
 int verbose;
 
 
@@ -48,7 +49,6 @@ typedef struct {
     char name[33];         /* byte 02-34: filename (32 byte max) + space for NUL terminator */
     unsigned char size[5]; /* byte 35-39: file size (40 bit big endian unsigned) */
 } ToolboxFileEntry;
-
 
 static int scsi_open(char *path)
 {
@@ -92,22 +92,6 @@ static int scsi_send_command(int dev, char *cmd, int cmd_len, char *buf, int buf
 	return 0;
 }
 
-//Get file from index
-static int bluescsi_getfile(int dev, int idx)
-{
-	char cmd[10] = {BLUESCSI_TOOLBOX_GET_FILE, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
-	char buf[1];
-	int ret;
-	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
-	{
-		fprintf (stderr, "Error: BlueSCSI test failed - %s\n", strerror(errno));
-		return -1;
-	}
-	ret = buf[0]; //Maximum of 100 files 
-	return ret;
-}
-
 
 //Counts the number of files in the /shared directory
 static int bluescsi_countfiles(int dev)
@@ -143,6 +127,11 @@ static int bluescsi_countcds(int dev)
 		return -1;
 	}
 	ret = buf[0]; //Maximum of 100 files
+	if (ret < 0 || ret > MAX_FILES)
+	{
+		fprintf (stderr,"Error: countcds invalid count %i\n", ret);
+		return -1;
+	}
 	return ret;
 }
 
@@ -188,7 +177,7 @@ static int bluescsi_listcds(int dev)
 	int num_cds;
 
 	num_cds = bluescsi_countcds (dev);
-	if (num_cds == 0 || num_cds > 100)
+	if (num_cds == 0 || num_cds > MAX_FILES)
 	{
 		fprintf (stderr, "Error:  CD number requested invalid, is device a CD?: %i\n", num_cds);
 		return -1;
@@ -223,49 +212,141 @@ static int bluescsi_listcds(int dev)
 	fprintf (stdout, "\n");
 	return 1;
 }
+
+ToolboxFileEntry files[MAX_FILES];
+int files_count;
+
+static long int size_to_long(const unsigned char size[5])
+{
+    int i;
+    long int result = 0;
+    for (i = 0; i < 5; i++)
+    {
+        result = (result << 8) | size[i];
+    }
+    return result;
+}
+
 static int bluescsi_listfiles(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_LIST_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char *buf;
-	int i, j;
+	int i;
 	int buf_size;
 	int num_files;
+	
+	if (verbose)
+		fprintf (stdout, "Listing files on %i\n", dev);
 
 	num_files = bluescsi_countfiles (dev);
-	if (num_files = 0 || num_files > 100)
+	if (num_files == 0 || num_files > MAX_FILES)
 	{
-		fprintf (stderr, "Error:  file number requested invalid: %i", num_files);
+		fprintf (stderr, "Error: listfiles num_files invalid: %i", num_files);
 		return -1;
 	}
+	files_count = num_files;
+	if (verbose)
+		fprintf (stdout, "Found %i files\n", num_files);
 	buf_size = sizeof(ToolboxFileEntry);
-	buf_size = buf_size * 3;
+	buf_size = buf_size * num_files;
 	
 	buf = (char *)malloc(buf_size);
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, buf_size) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI test failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: listfiles failed - %s\n", strerror(errno));
 		return -1;
 	}
-	j = 0;
-	for (i=0;i<buf_size;i++)
-	{
-
-		if (j == 0 )
-			fprintf (stdout, "#%i ", (buf[i]) + 1);
-		if (j >= 2 && j <= 34)
-			fprintf (stdout, "%c", buf[i]);
-		j++;
-		if (j >= sizeof(ToolboxFileEntry))
-		{
-			j = 0;
-			fprintf (stdout, "\n");
-		}
-	//	fprintf (stdout, "%02x",buf[i]);
+	//Copy SCSI data to global files var	
+	for (i = 0; i < num_files; i++) {
+		memcpy(&files[i], buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
 	}
-	fprintf (stdout, "\n");
-	return 1;
+	
+	for (i = 0;i < num_files;i++)
+		fprintf (stdout, "#%i %s %li bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
+	return 0;
 }
+#define MAX_DATA_LEN 4096
+#define OUT_DIR "/tmp/"
+
+//Get file from index, we grab in chunks of 4096
+static int bluescsi_getfile(int dev, int idx)
+{
+	char cmd[10];
+	char buf[MAX_DATA_LEN];
+	FILE *fd;
+	char *filename;
+	size_t bytes_written;
+	size_t bytes_left;
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = BLUESCSI_TOOLBOX_GET_FILE;
+	cmd[1] = 0; //offset through file in MAX_DATA_LEN blocks
+	
+	//We need to populate the files struct first before doing anything else
+	if (bluescsi_listfiles (dev) != 0)
+	{
+		fprintf (stderr, "Error: getfile couldn't listfiles\n");
+		return -1;
+	}
+	
+	if (verbose)
+		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
+	/*buf = malloc(MAX_DATA_LEN);
+	if (buf == NULL)
+	{
+		fprintf (stderr, "getfile: malloc error\n");
+		return 1;
+	}
+*/
+	filename = malloc (strlen(OUT_DIR) + strlen(files[idx].name));
+	strcpy (filename, OUT_DIR);
+	strcat (filename, files[idx].name);
+	if (verbose)
+		fprintf (stdout, "Writing to file %s\n", filename);
+	fd = fopen(filename, "wb");
+	if (fd == NULL)
+	{
+		fprintf (stderr, "Error: getfile couldn't open %s\n", filename);
+		return -1;
+	}
+	memset(buf, 0, sizeof(buf));
+	bytes_left = 0;
+	bytes_written = 0;
+	//Read the data
+	while (1)
+	{	
+		if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+		{
+			fprintf (stderr, "Error: getfile failed during transfer - %s\n", strerror(errno));
+			fclose (fd);
+			return -1;
+		}
+
+		bytes_left = size_to_long (files[idx].size) - bytes_written;
+
+		if (bytes_left <= 0)
+		{
+			if (verbose)
+				fprintf (stdout, "Transfer of %s complete\n", filename);
+			break;
+		}
+
+		//Check to see if we are on the last chunk
+		if (bytes_left < MAX_DATA_LEN)
+		{
+			bytes_written += fwrite (buf, sizeof(unsigned char), bytes_left, fd);
+			break;
+		}
+		//Otherwise write the chunk and move onto the next one
+		bytes_written += fwrite (buf, sizeof(unsigned char), MAX_DATA_LEN, fd);
+		cmd[1] = cmd[1] + 1; //increment the offset
+		}
+	fclose (fd);
+	return 0;
+}
+
+
 /** TOOLBOX_LIST_DEVICES (read, length 10)
  * Input:
  *  CDB 00 = command byte
@@ -353,7 +434,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img)
 	
 	if (list > 0)
 	{
-		bluescsi_listcds(dev);
+		bluescsi_listfiles(dev);
 	}	
 	//TODO Check to see if device is CDROM first
 	/*fprintf (stdout, "Number of files in /shared directory: %i\n", bluescsi_countfiles(dev));
@@ -367,6 +448,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img)
 		fprintf (stdout, "\n");
 		free(inq);
 	}*/
+	//bluescsi_getfile (dev,1);
 	if (cd_img != -1)
 		bluescsi_setnextcd(dev, cd_img);
 	scsi_close(dev);

@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/dsreq.h>
 #include <invent.h>
@@ -28,6 +29,7 @@
 #define OPEN_RETRO_SCSI_TOO_MANY_FILES 0x0001
 
 #define MAX_FILES 100 //TODO Hmmmm
+#define MAX_DATA_LEN 4096
 int verbose;
 
 
@@ -52,7 +54,7 @@ typedef struct {
 
 static int scsi_open(char *path)
 {
-	return open(path, O_RDONLY | O_SYNC);
+	return open(path, O_RDWR | O_SYNC);
 }
 
 
@@ -74,8 +76,11 @@ static int scsi_send_command(int dev, char *cmd, int cmd_len, char *buf, int buf
 	r.ds_cmdlen   = cmd_len;
 	r.ds_databuf  = (caddr_t) buf;
 	r.ds_datalen  = buf_len;
-	r.ds_sensebuf = (caddr_t) buf;
-	r.ds_senselen = buf_len;
+	//r.ids_sensebuf = (caddr_t) buf;
+	//r.ds_senselen = buf_len;
+	r.ds_sensebuf = NULL;
+	r.ds_senselen = 0;
+	
 	r.ds_time     = 5 * 1000;  /* 5 seconds should be enough */
 	r.ds_flags    = DSRQ_READ;
 	
@@ -103,7 +108,184 @@ static int scsi_send_command(int dev, char *cmd, int cmd_len, char *buf, int buf
 	}
 	return 0;
 }
+//TODO Document this or just do it better
+static int scsi_send_commandw(int dev, char *cmd, int cmd_len, char *buf, int buf_len)
+{
+	int i;
+	dsreq_t r;
+	memset(&r, 0, sizeof(dsreq_t));
+	
+	/* Assemble the request structure */
+	r.ds_cmdbuf   = (caddr_t) cmd;
+	r.ds_cmdlen   = cmd_len;
+	r.ds_databuf  = (caddr_t) buf;
+	r.ds_datalen  = buf_len;
+	//r.ids_sensebuf = (caddr_t) buf;
+	//r.ds_senselen = buf_len;
+	r.ds_sensebuf = NULL;
+	r.ds_senselen = 0;
+	
+	r.ds_time     = 5 * 1000;  /* 5 seconds should be enough */
+	r.ds_flags    = DSRQ_WRITE;
+	
+	if (verbose){
+		fprintf(stdout, "Sending SCSI command: ");
+		for (i = 0; i < cmd_len; ++i) {
+			fprintf(stdout, "%02x ", (unsigned char)r.ds_cmdbuf[i]);
+		}
+		fprintf(stdout, "\n");
+	}	
+	/* Issue the request */
+	if (ioctl(dev, DS_ENTER, &r))
+		return -errno;
+	return 0;
+}
 
+
+#define SEND_BUF_SIZE 512
+#define NAME_BUF_SIZE 33
+
+static int bluescsi_sendfile (int dev, char *path)
+{
+	char cmd[10] = {BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	char filename[NAME_BUF_SIZE];
+	char *base_name;
+	char send_buf[SEND_BUF_SIZE]; //Send buffer is 512 bytes
+	long int bytes_read = 0;
+	long int bytes_left = 0;
+	int buf_idx= 0; //offset in 512 byte chunks
+	int ret;
+	FILE *fd;
+	long int filesize;
+	struct stat st; //Struct to get filesize
+	
+	memset(send_buf, 0, sizeof(send_buf));
+	// Extract filename from path
+	base_name = strrchr(path, '/');
+    if (base_name == NULL) {
+        base_name = path; // No '/' found, the path is the filename
+    } else {
+        base_name++; // Move past '/'
+    }
+
+    // Ensure filename fits in buffer
+    if (strlen(base_name) >= NAME_BUF_SIZE) {
+        fprintf(stderr, "Filename too long: %s\n", base_name);
+        return -1;
+    }
+    strncpy(filename, base_name, NAME_BUF_SIZE);
+    filename[NAME_BUF_SIZE - 1] = '\0'; // Ensure null-termination
+	//TODO do filename getting stuff
+	
+	return 1;
+	strncpy (filename, path, NAME_BUF_SIZE);
+	fd = fopen(path, "rb");
+	if ( fd == NULL)
+	{
+		fprintf (stderr, "Error: sendfile couldn't open %s\n", path);
+		return 1;
+	}
+    	// Use stat to get file size
+    	if (stat(path, &st) == 0) {
+		printf("File size of %s is %lld bytes\n", filename, (long long)st.st_size);
+	} else {
+		perror("Error getting file size");
+		fclose(fd);
+        	return 1;
+    	}
+	filesize = st.st_size;
+
+	//Send the name as data
+	if (scsi_send_commandw(dev, cmd, sizeof(cmd), filename, MAX_DATA_LEN) != 0)
+	{
+		fprintf (stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
+			fclose(fd);
+		return 1;
+	}
+	
+	//Construct the command and start sending the file
+	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_10;
+	
+	while (bytes_read < filesize){
+		
+		if (bytes_left < SEND_BUF_SIZE)
+		{
+			bytes_read += fread(send_buf, 1, bytes_left, fd); 
+			cmd[1] = (bytes_left & 0xFF00) >> 8;
+			cmd[2] = (bytes_left & 0xFF);
+		}
+		else
+		{
+			cmd[1] = (sizeof(send_buf) & 0xFF00) >> 8;
+			cmd[2] = (sizeof(send_buf) & 0xFF);
+			bytes_read += fread(send_buf, 1, sizeof(send_buf), fd); 
+		}
+
+		cmd[3] = (buf_idx & 0xFF0000) >> 16;
+		cmd[4] = (buf_idx & 0xFF00) >> 8;
+		cmd[5] = (buf_idx & 0xFF);
+
+		if (bytes_left < SEND_BUF_SIZE)
+			ret = scsi_send_commandw(dev, cmd, sizeof(cmd), send_buf, bytes_left );
+		else
+			ret = scsi_send_commandw(dev, cmd, sizeof(cmd), send_buf, sizeof(send_buf));
+		if (ret != 0)
+		{
+			fprintf (stderr, "Error: sendfile10 failed - %s\n", strerror(errno));
+			fclose(fd);
+			return 1;
+		}
+		buf_idx++;
+		bytes_left = filesize - bytes_read;
+	
+	}
+	memset (cmd, 0, sizeof(cmd));
+	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
+
+	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
+	{
+		fprintf (stderr, "Error: sendfileemd failed - %s\n", strerror(errno));
+		fclose(fd);
+		return 1;
+	}
+
+
+	fclose(fd);
+	return 0;
+}
+
+//Check and set debug status
+static int bluescsi_getdebug (int dev)
+{
+	int ret;
+	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	char buf[1];
+	cmd[1] = 1;//Get debug flag
+	memset(buf, 0, sizeof(buf));
+	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	{
+		fprintf (stderr, "Error: getdebug failed - %s\n", strerror(errno));
+		return -1;
+	}
+	ret = buf[0];
+	return ret;
+}
+
+static int bluescsi_setdebug (int dev, int value)
+{
+	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	cmd[1] = 0;//set debug flag
+	cmd[2] = value;
+
+	if (verbose)
+		fprintf (stdout, "debug mode set to %i\n", cmd[2]);	
+	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
+	{
+		fprintf (stderr, "Error: setdebug failed - %s\n", strerror(errno));
+		return 1;
+	}
+	return 0;
+}
 
 //Returns the number of files in the /shared directory
 static int bluescsi_countfiles(int dev)
@@ -238,7 +420,7 @@ static long int size_to_long(const unsigned char size[5])
     return result;
 }
 
-static int bluescsi_listfiles(int dev)
+static int bluescsi_listfiles(int dev, int print)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_LIST_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char *buf;
@@ -272,14 +454,13 @@ static int bluescsi_listfiles(int dev)
 	for (i = 0; i < num_files; i++) {
 		memcpy(&files[i], buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
 	}
-	if (verbose)
+	if (verbose || print)
 	{	
 		for (i = 0;i < num_files;i++)
 			fprintf (stdout, "#%i %s %li bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
 	}
 	return 0;
 }
-#define MAX_DATA_LEN 4096
 
 //Get file from /shared directory, grabbed in chunks of 4096
 static int bluescsi_getfile(int dev, int idx, char *outdir)
@@ -301,7 +482,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	if (strlen (outdir) < 2)//Default to current directory
 		strcpy (outdir, "./");
 	//We need to populate the files struct first before doing anything else
-	if (bluescsi_listfiles (dev) != 0)
+	if (bluescsi_listfiles (dev, 0) != 0)
 	{
 		fprintf (stderr, "Error: getfile couldn't listfiles\n");
 		return -1;
@@ -439,7 +620,8 @@ enum {
 enum {
 	LIST_NONE, 
 	LIST_CD,
-	LIST_SHARED
+	LIST_SHARED,
+	LIST_PUT
 };
 
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
@@ -489,11 +671,13 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
     	}
 	if (verbose)
     		fprintf(stdout, "dev_path_num %i\n", dev_path_num);
-
+	
 	if (list == LIST_CD)
 		bluescsi_listcds(dev);
 	else if (list == LIST_SHARED)
-		bluescsi_listfiles(dev);
+		bluescsi_listfiles(dev, 1);
+	else if (list == LIST_PUT)
+		bluescsi_sendfile (dev, outdir);
 	else if (file != -1)
 		bluescsi_getfile (dev, file, outdir);
 	else if (cd_img != -1)
@@ -503,12 +687,13 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}
+//	bluescsi_sendfile (dev, "/usr/people/sonnyjim/src/bstoolbox/1M.data");
 	scsi_close(dev);
 }
 
 static void usage(void)
 {
-	fprintf(stderr, "\nUsage:   bstoolbox [-h] [-v] [-l] [-c/-g num] [-o directory] [device]\\nn");
+	fprintf(stderr, "\nUsage:   bstoolbox [options] [device]\n\n");
 	fprintf(stderr, "Example: bstoolbox -l /dev/scsi/sc0d1l0\n\n");
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h      : display this help message and exit\n");
@@ -517,6 +702,7 @@ static void usage(void)
 	fprintf(stderr, "\t-s      : List /shared directory\n");
 	fprintf(stderr, "\t-c num  : change to CD number (1, 2, etc)\n");
 	fprintf(stderr, "\t-g num  : get file from shared directory (1, 2, etc)\n");
+	fprintf(stderr, "\t-p file : put file to shared directory\n");
 	fprintf(stderr, "\t-o dir  : set output directory, defaults to current\n");
 	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
 }
@@ -553,7 +739,7 @@ int main(int argc, char *argv[])
 	int c, cdimg = -1, list = 0, file = -1;
 	char outdir[1024];
 
-	while ((c = getopt(argc, argv, "hvlsc:g:o:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsc:g:o:p:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
@@ -562,6 +748,10 @@ int main(int argc, char *argv[])
 			break;
 		case 'o':
 			strncpy(outdir, optarg, sizeof(outdir) - 1);
+			break;
+		case 'p':
+			strncpy(outdir, optarg, sizeof(outdir) - 1);
+			list = LIST_PUT;
 			break;
 		case 'l':
 			list = LIST_CD;

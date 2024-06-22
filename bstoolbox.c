@@ -27,7 +27,7 @@
 #define BLUESCSI_TOOLBOX_COUNT_CDS      0xDA
 #define OPEN_RETRO_SCSI_TOO_MANY_FILES 0x0001
 
-#define MAX_FILES 100 //TODO Hahahahaha
+#define MAX_FILES 100 //TODO Hmmmm
 int verbose;
 
 
@@ -52,7 +52,7 @@ typedef struct {
 
 static int scsi_open(char *path)
 {
-	return open(path, O_RDWR | O_NONBLOCK);
+	return open(path, O_RDONLY | O_SYNC);
 }
 
 
@@ -65,6 +65,7 @@ static int scsi_close(int dev)
 static int scsi_send_command(int dev, char *cmd, int cmd_len, char *buf, int buf_len)
 {
 	int i;
+	int try;
 	dsreq_t r;
 	memset(&r, 0, sizeof(dsreq_t));
 	
@@ -86,14 +87,25 @@ static int scsi_send_command(int dev, char *cmd, int cmd_len, char *buf, int buf
 		fprintf(stdout, "\n");
 	}	
 	/* Issue the request */
-	if (ioctl(dev, DS_ENTER, &r))
-		return -errno;
-	
+	//if (ioctl(dev, DS_ENTER, &r))
+	//	return -errno;
+	for (try = 0; try < 10; try ++){
+		if (ioctl(dev, DS_ENTER, &r) < 0 || r.ds_status != 0){
+			fprintf(stderr, "WARNING: SCSI command timed out (%d); retrying...\n", r.ds_status);
+			sleep(try + 1);
+		}
+		else
+		  break;
+		if (try >= 10){
+			fprintf(stderr, "ERROR: Unable to send print data (%d)\n",r.ds_status);
+			return (1);
+		}
+	}
 	return 0;
 }
 
 
-//Counts the number of files in the /shared directory
+//Returns the number of files in the /shared directory
 static int bluescsi_countfiles(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_COUNT_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
@@ -167,7 +179,6 @@ static int bluescsi_setnextcd(int dev, int num)
 	return 0;
 }
 
-//TODO Check device is a CD before proceeding
 static int bluescsi_listcds(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_LIST_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -261,16 +272,17 @@ static int bluescsi_listfiles(int dev)
 	for (i = 0; i < num_files; i++) {
 		memcpy(&files[i], buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
 	}
-	
-	for (i = 0;i < num_files;i++)
-		fprintf (stdout, "#%i %s %li bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
+	if (verbose)
+	{	
+		for (i = 0;i < num_files;i++)
+			fprintf (stdout, "#%i %s %li bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
+	}
 	return 0;
 }
 #define MAX_DATA_LEN 4096
-#define OUT_DIR "/tmp/"
 
-//Get file from index, we grab in chunks of 4096
-static int bluescsi_getfile(int dev, int idx)
+//Get file from /shared directory, grabbed in chunks of 4096
+static int bluescsi_getfile(int dev, int idx, char *outdir)
 {
 	char cmd[10];
 	char buf[MAX_DATA_LEN];
@@ -278,11 +290,16 @@ static int bluescsi_getfile(int dev, int idx)
 	char *filename;
 	size_t bytes_written;
 	size_t bytes_left;
+	int blk_idx = 0;
+
 
 	memset(cmd, 0, sizeof(cmd));
 	cmd[0] = BLUESCSI_TOOLBOX_GET_FILE;
-	cmd[1] = 0; //offset through file in MAX_DATA_LEN blocks
-	
+	cmd[1] = idx;
+	cmd[2] = 0; //Index offset in MAX_DATA_LEN blocks
+
+	if (strlen (outdir) < 2)//Default to current directory
+		strcpy (outdir, "./");
 	//We need to populate the files struct first before doing anything else
 	if (bluescsi_listfiles (dev) != 0)
 	{
@@ -292,15 +309,8 @@ static int bluescsi_getfile(int dev, int idx)
 	
 	if (verbose)
 		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
-	/*buf = malloc(MAX_DATA_LEN);
-	if (buf == NULL)
-	{
-		fprintf (stderr, "getfile: malloc error\n");
-		return 1;
-	}
-*/
-	filename = malloc (strlen(OUT_DIR) + strlen(files[idx].name));
-	strcpy (filename, OUT_DIR);
+	filename = malloc (strlen(outdir) + strlen(files[idx].name));
+	strcpy (filename, outdir);
 	strcat (filename, files[idx].name);
 	if (verbose)
 		fprintf (stdout, "Writing to file %s\n", filename);
@@ -313,7 +323,9 @@ static int bluescsi_getfile(int dev, int idx)
 	memset(buf, 0, sizeof(buf));
 	bytes_left = 0;
 	bytes_written = 0;
-	//Read the data
+
+	//Read the data from the SCSI bus and store to disk 
+	//TODO timeouts and sanity checks
 	while (1)
 	{	
 		if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
@@ -324,7 +336,8 @@ static int bluescsi_getfile(int dev, int idx)
 		}
 
 		bytes_left = size_to_long (files[idx].size) - bytes_written;
-
+		if (verbose)
+			fprintf (stdout, "Bytes left: %li\n", bytes_left);
 		if (bytes_left <= 0)
 		{
 			if (verbose)
@@ -340,8 +353,14 @@ static int bluescsi_getfile(int dev, int idx)
 		}
 		//Otherwise write the chunk and move onto the next one
 		bytes_written += fwrite (buf, sizeof(unsigned char), MAX_DATA_LEN, fd);
-		cmd[1] = cmd[1] + 1; //increment the offset
-		}
+
+		//increment the offset
+		blk_idx++;
+		cmd[2] = (unsigned char)(blk_idx >> 24) & 0xFF;
+		cmd[3] = (unsigned char)(blk_idx >> 16) & 0xFF;
+		cmd[4] = (unsigned char)(blk_idx >>  8) & 0xFF;
+		cmd[5] = (unsigned char)(blk_idx      ) & 0xFF;
+	}
 	fclose (fd);
 	return 0;
 }
@@ -383,7 +402,7 @@ static int bluescsi_inquiry(int dev)
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
 	{
-		fprintf (stderr, "Error: scsi_send_command failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: inquiry command failed - %s\n", strerror(errno));
 		return 1;
 	}
 	memset (&inq, 0, sizeof(scsi_inquiry));
@@ -401,7 +420,7 @@ static int bluescsi_inquiry(int dev)
 		fprintf (stdout, "vendor_id: %s \nproduct_id: %s\n", inq.vendor_id, inq.product_id);
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
 	}
-
+	//TODO Once a BlueSCSI drive is found, send a MODE SENSE 0x1A command for page 0x31. Validate it against the BlueSCSIVendorPage (see: mode.c)
 	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
 		return 0;
 	else
@@ -411,19 +430,34 @@ static int bluescsi_inquiry(int dev)
 	}
 }
 
-static void do_drive(char *path, int list, int verbose, int cd_img)
+enum {
+	TYPE_NONE = 255,
+	TYPE_HDD = 0x00,
+	TYPE_CD = 0x02
+} dev_type;
+
+enum {
+	LIST_NONE, 
+	LIST_CD,
+	LIST_SHARED
+};
+
+static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
 {
-	//char *inq = NULL;
-	int   dev; 
-	//int i;
-	
+	int   dev;
+       	int dev_path_num; //SCSI ID pulled from path
+	int type[8];
+	int i;
+	char *inq = NULL;
+
 	dev = scsi_open(path);
 	if (dev < 0) {
 		fprintf(stderr, "ERROR: Cannot open device: %s\n", strerror(errno));
 		exit(1);
 	}
 	if (verbose)	
-		printf("Opened %s:\n", path);
+		printf("Opened dev %i %s:\n", dev, path);
+
 	//Do inquiry to check we are working with a BlueSCSI
 	if (bluescsi_inquiry (dev) != 0)
 	{
@@ -432,38 +466,59 @@ static void do_drive(char *path, int list, int verbose, int cd_img)
 		exit(1);
 	}
 	
-	if (list > 0)
-	{
-		bluescsi_listfiles(dev);
-	}	
-	//TODO Check to see if device is CDROM first
-	/*fprintf (stdout, "Number of files in /shared directory: %i\n", bluescsi_countfiles(dev));
-	bluescsi_listcds(dev);
-	bluescsi_listfiles(dev);
-	fprintf (stdout, "CD count: %i\n", bluescsi_countcds(dev));
+	//Next double check what kind of device we are emulating
 	if (bluescsi_listdevices(dev, &inq) == 0) {
-		fprintf (stdout, "List device flags: ");
+		if (verbose)
+			fprintf (stdout, "List device flags: ");
 		for (i = 0; i < 8;i++)
-			fprintf (stdout, "%02x ", inq[i]);
-		fprintf (stdout, "\n");
+		{
+			type[i] = inq[i];
+			if (verbose)
+				fprintf (stdout, "%02x ", inq[i]);
+		}
+		if (verbose)
+			fprintf (stdout, "\n");
 		free(inq);
-	}*/
-	//bluescsi_getfile (dev,1);
-	if (cd_img != -1)
-		bluescsi_setnextcd(dev, cd_img);
+	}
+	// Extract the device number from the path 
+	// TODO This will probably break very easily
+    	if (sscanf(path, "/dev/scsi/sc%*dd%dl%*d", &dev_path_num) != 1) {
+        	fprintf(stderr, "ERROR: Invalid path format: %s\n", path);
+        	scsi_close(dev);
+        	return;
+    	}
+	if (verbose)
+    		fprintf(stdout, "dev_path_num %i\n", dev_path_num);
+
+	if (list == LIST_CD)
+		bluescsi_listcds(dev);
+	else if (list == LIST_SHARED)
+		bluescsi_listfiles(dev);
+	else if (file != -1)
+		bluescsi_getfile (dev, file, outdir);
+	else if (cd_img != -1)
+	{
+		if (type[dev_path_num] != TYPE_CD)
+			fprintf (stderr, "Device doesn't seem to be a CD drive?\n");
+		else
+			bluescsi_setnextcd(dev, cd_img);
+	}
 	scsi_close(dev);
 }
 
 static void usage(void)
 {
-	fprintf(stderr, "Usage:   bstoolbox [-h] [-v] [-l] [-c num] [device]\n");
-	fprintf(stderr, "Example: bstoolbox -l /dev/scsi/sc0d1l0\n");
+	fprintf(stderr, "\nUsage:   bstoolbox [-h] [-v] [-l] [-c/-g num] [-o directory] [device]\\nn");
+	fprintf(stderr, "Example: bstoolbox -l /dev/scsi/sc0d1l0\n\n");
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h      : display this help message and exit\n");
 	fprintf(stderr, "\t-v      : be verbose\n");
 	fprintf(stderr, "\t-l      : list available CDs\n");
+	fprintf(stderr, "\t-s      : List /shared directory\n");
 	fprintf(stderr, "\t-c num  : change to CD number (1, 2, etc)\n");
-	fprintf(stderr, "\nPlease make sure you run the program as root.\n");
+	fprintf(stderr, "\t-g num  : get file from shared directory (1, 2, etc)\n");
+	fprintf(stderr, "\t-o dir  : set output directory, defaults to current\n");
+	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
 }
 
 static int mediad_start() {
@@ -495,14 +550,24 @@ static int mediad_stop() {
 
 int main(int argc, char *argv[])
 {
-	int c, cdimg = -1, list = 0;
+	int c, cdimg = -1, list = 0, file = -1;
+	char outdir[1024];
 
-	while ((c = getopt(argc, argv, "hvlc:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsc:g:o:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
+		case 'g':
+			file = atoi(optarg);
+			break;
+		case 'o':
+			strncpy(outdir, optarg, sizeof(outdir) - 1);
+			break;
 		case 'l':
-			list = 1;
+			list = LIST_CD;
+			break;
+		case 's':
+			list = LIST_SHARED;
 			break;
 		
 		case 'v':
@@ -527,7 +592,7 @@ int main(int argc, char *argv[])
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
-	do_drive(argv[0], list, verbose, cdimg);
+	do_drive(argv[0], list, verbose, cdimg, file, outdir);
 	if (cdimg != -1)
 		mediad_start ();
 	

@@ -1,5 +1,8 @@
+# BlueSCSI toolbox for SGI IRIX
 Download files and run 'make', it should spit out a bstoolbox binary.
 
+## Usage
+```
 Please specify device ("/dev/scsi/..."
 
 Usage:   bstoolbox [options] [device]
@@ -20,3 +23,4 @@ Options:
 
 
 Please make sure you run the program as root.
+```

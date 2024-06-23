@@ -1,6 +1,8 @@
 # BlueSCSI toolbox for SGI IRIX
 Download files and run 'make', it should spit out a bstoolbox binary.
 
+**Treat this software as ALPHA, back up any important data before using it!**
+
 ## Usage
 ```
 Please specify device ("/dev/scsi/..."

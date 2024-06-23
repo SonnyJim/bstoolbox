@@ -16,20 +16,46 @@
 
 #define SCSI_INQUIRY    0x12
 #define BLUESCSI_TOOLBOX_COUNT_FILES    0xD2
-#define BLUESCSI_TOOLBOX_LIST_FILES     0xD0
+#define BLUESCSI_TOOLBOX_MODE_FILES     0xD0
 #define BLUESCSI_TOOLBOX_GET_FILE       0xD1
 #define BLUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3
 #define BLUESCSI_TOOLBOX_SEND_FILE_10   0xD4
 #define BLUESCSI_TOOLBOX_SEND_FILE_END  0xD5
 #define BLUESCSI_TOOLBOX_TOGGLE_DEBUG   0xD6
-#define BLUESCSI_TOOLBOX_LIST_CDS       0xD7
+#define BLUESCSI_TOOLBOX_MODE_CDS       0xD7
 #define BLUESCSI_TOOLBOX_SET_NEXT_CD    0xD8
-#define BLUESCSI_TOOLBOX_LIST_DEVICES   0xD9
+#define BLUESCSI_TOOLBOX_MODE_DEVICES   0xD9
 #define BLUESCSI_TOOLBOX_COUNT_CDS      0xDA
 #define OPEN_RETRO_SCSI_TOO_MANY_FILES 0x0001
 
 #define MAX_FILES 100 //TODO Hmmmm
 #define MAX_DATA_LEN 4096
+
+enum {
+	TYPE_NONE = 255,
+	TYPE_HDD = 0x00,
+	TYPE_CD = 0x02
+} dev_type;
+
+enum {
+	MODE_NONE, 
+	MODE_CD,
+	MODE_SHARED,
+	MODE_PUT,
+	MODE_INQUIRY,
+	MODE_DEBUG
+};
+
+enum {
+	PRINT_OFF,
+	PRINT_ON
+};
+
+enum {
+	DEBUG_SET,
+	DEBUG_GET
+};
+
 int verbose;
 
 
@@ -158,27 +184,25 @@ static int bluescsi_sendfile (int dev, char *path)
 	FILE *fd;
 	long int filesize;
 	struct stat st; //Struct to get filesize
-	
+	if (verbose)
+		fprintf (stdout, "sendfile: %s\n", path);
+
 	memset(send_buf, 0, sizeof(send_buf));
 	// Extract filename from path
 	base_name = strrchr(path, '/');
-    if (base_name == NULL) {
-        base_name = path; // No '/' found, the path is the filename
-    } else {
-        base_name++; // Move past '/'
-    }
+	if (base_name == NULL) {
+		base_name = path; // No '/' found, the path is the filename
+	} else {
+		base_name++; // Move past '/'
+	}
+	    // Ensure filename fits in buffer
+	if (strlen(base_name) >= NAME_BUF_SIZE) {
+		fprintf(stderr, "Error: sendfile Filename too long: %s\n", base_name);
+		return -1;
+	}
+	strncpy(filename, base_name, NAME_BUF_SIZE);
+	filename[NAME_BUF_SIZE - 1] = '\0'; // Ensure null-termination
 
-    // Ensure filename fits in buffer
-    if (strlen(base_name) >= NAME_BUF_SIZE) {
-        fprintf(stderr, "Filename too long: %s\n", base_name);
-        return -1;
-    }
-    strncpy(filename, base_name, NAME_BUF_SIZE);
-    filename[NAME_BUF_SIZE - 1] = '\0'; // Ensure null-termination
-	//TODO do filename getting stuff
-	
-	return 1;
-	strncpy (filename, path, NAME_BUF_SIZE);
 	fd = fopen(path, "rb");
 	if ( fd == NULL)
 	{
@@ -187,9 +211,10 @@ static int bluescsi_sendfile (int dev, char *path)
 	}
     	// Use stat to get file size
     	if (stat(path, &st) == 0) {
-		printf("File size of %s is %lld bytes\n", filename, (long long)st.st_size);
+		if (verbose)
+			printf("File size of %s is %lld bytes\n", filename, (long long)st.st_size);
 	} else {
-		perror("Error getting file size");
+		fprintf (stderr, "Error: sendfile couldn't stat %s\n", path);
 		fclose(fd);
         	return 1;
     	}
@@ -244,7 +269,7 @@ static int bluescsi_sendfile (int dev, char *path)
 
 	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
 	{
-		fprintf (stderr, "Error: sendfileemd failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: sendfileend failed - %s\n", strerror(errno));
 		fclose(fd);
 		return 1;
 	}
@@ -260,7 +285,7 @@ static int bluescsi_getdebug (int dev)
 	int ret;
 	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
 	char buf[1];
-	cmd[1] = 1;//Get debug flag
+	cmd[1] = DEBUG_GET;//Get debug flag
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
 	{
@@ -273,19 +298,25 @@ static int bluescsi_getdebug (int dev)
 
 static int bluescsi_setdebug (int dev, int value)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
-	cmd[1] = 0;//set debug flag
+	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	
+	if (value > 1)
+		value = 1;
+	else if (value < 0)
+		value = 0;
+	cmd[1] = DEBUG_SET;
 	cmd[2] = value;
-
-	if (verbose)
-		fprintf (stdout, "debug mode set to %i\n", cmd[2]);	
 	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
 	{
-		fprintf (stderr, "Error: setdebug failed - %s\n", strerror(errno));
-		return 1;
+		fprintf (stderr, "Error: BlueSCSI setdebug failed - %s\n", strerror(errno));
+		return -1;
 	}
+
+	if (verbose)
+		fprintf (stdout, "Debug mode set to: %i\n", bluescsi_getdebug (dev));
 	return 0;
 }
+
 
 //Returns the number of files in the /shared directory
 static int bluescsi_countfiles(int dev)
@@ -296,7 +327,7 @@ static int bluescsi_countfiles(int dev)
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI test failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: countfiles failed - %s\n", strerror(errno));
 		return -1;
 	}
 	ret = buf[0]; //Maximum of 100 files 
@@ -317,7 +348,7 @@ static int bluescsi_countcds(int dev)
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI test failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: countcds failed - %s\n", strerror(errno));
 		return -1;
 	}
 	ret = buf[0]; //Maximum of 100 files
@@ -363,7 +394,7 @@ static int bluescsi_setnextcd(int dev, int num)
 
 static int bluescsi_listcds(int dev)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_LIST_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char *buf;
 	int i, j;
 	int buf_size;
@@ -383,7 +414,7 @@ static int bluescsi_listcds(int dev)
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, buf_size) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI test failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: listcds failed - %s\n", strerror(errno));
 		return -1;
 	}
 	j = 0;
@@ -422,7 +453,7 @@ static long int size_to_long(const unsigned char size[5])
 
 static int bluescsi_listfiles(int dev, int print)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_LIST_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char *buf;
 	int i;
 	int buf_size;
@@ -547,7 +578,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 }
 
 
-/** TOOLBOX_LIST_DEVICES (read, length 10)
+/** TOOLBOX_MODE_DEVICES (read, length 10)
  * Input:
  *  CDB 00 = command byte
  * Output:
@@ -556,14 +587,14 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
  */
 static int bluescsi_listdevices(int dev, char **outbuf)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_LIST_DEVICES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_DEVICES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	char buf[8];
 	*outbuf = NULL;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
 	{
-		fprintf (stderr, "Error: BlueSCSI test failed - %s\n", strerror(errno));
+		fprintf (stderr, "Error: BlueSCSI listdevices failed - %s\n", strerror(errno));
 		return -1;
 	}
 	*outbuf = (char *)calloc(sizeof(buf), sizeof(char));
@@ -573,7 +604,7 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	return 0;
 }
 //Returns zero on success
-static int bluescsi_inquiry(int dev)
+static int bluescsi_inquiry(int dev, int print)
 {
 	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};	
 	char buf[sizeof(scsi_inquiry)];
@@ -594,12 +625,13 @@ static int bluescsi_inquiry(int dev)
 	inq.product_id[17] = '\0';
 	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
 	inq.product_rev[33] = '\0';
-	
-	if (verbose)
+
+	if (verbose || print)
 	{
 		fprintf (stdout, "SCSI version: %i\n", inq.version);
 		fprintf (stdout, "vendor_id: %s \nproduct_id: %s\n", inq.vendor_id, inq.product_id);
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
+		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
 	}
 	//TODO Once a BlueSCSI drive is found, send a MODE SENSE 0x1A command for page 0x31. Validate it against the BlueSCSIVendorPage (see: mode.c)
 	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
@@ -610,19 +642,6 @@ static int bluescsi_inquiry(int dev)
 		return 2;
 	}
 }
-
-enum {
-	TYPE_NONE = 255,
-	TYPE_HDD = 0x00,
-	TYPE_CD = 0x02
-} dev_type;
-
-enum {
-	LIST_NONE, 
-	LIST_CD,
-	LIST_SHARED,
-	LIST_PUT
-};
 
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
 {
@@ -641,7 +660,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		printf("Opened dev %i %s:\n", dev, path);
 
 	//Do inquiry to check we are working with a BlueSCSI
-	if (bluescsi_inquiry (dev) != 0)
+	if (bluescsi_inquiry (dev, PRINT_OFF) != 0)
 	{
 		fprintf (stderr, "Didn't find a BlueSCSI device at %s\n", path);
 		scsi_close (dev);
@@ -672,11 +691,15 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	if (verbose)
     		fprintf(stdout, "dev_path_num %i\n", dev_path_num);
 	
-	if (list == LIST_CD)
+	if (list == MODE_CD)
 		bluescsi_listcds(dev);
-	else if (list == LIST_SHARED)
-		bluescsi_listfiles(dev, 1);
-	else if (list == LIST_PUT)
+	else if (list == MODE_INQUIRY)
+		bluescsi_inquiry(dev, PRINT_ON);
+	else if (list == MODE_DEBUG)
+		bluescsi_setdebug(dev, file);
+	else if (list == MODE_SHARED)
+		bluescsi_listfiles(dev, PRINT_ON);
+	else if (list == MODE_PUT)
 		bluescsi_sendfile (dev, outdir);
 	else if (file != -1)
 		bluescsi_getfile (dev, file, outdir);
@@ -687,23 +710,24 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}
-//	bluescsi_sendfile (dev, "/usr/people/sonnyjim/src/bstoolbox/1M.data");
 	scsi_close(dev);
 }
 
 static void usage(void)
 {
 	fprintf(stderr, "\nUsage:   bstoolbox [options] [device]\n\n");
-	fprintf(stderr, "Example: bstoolbox -l /dev/scsi/sc0d1l0\n\n");
+	fprintf(stderr, "Example: bstoolbox -s /dev/scsi/sc0d1l0\n\n");
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h      : display this help message and exit\n");
 	fprintf(stderr, "\t-v      : be verbose\n");
+	fprintf(stderr, "\t-i      : interrogate BlueSCSI and return version\n");
 	fprintf(stderr, "\t-l      : list available CDs\n");
 	fprintf(stderr, "\t-s      : List /shared directory\n");
 	fprintf(stderr, "\t-c num  : change to CD number (1, 2, etc)\n");
 	fprintf(stderr, "\t-g num  : get file from shared directory (1, 2, etc)\n");
 	fprintf(stderr, "\t-p file : put file to shared directory\n");
 	fprintf(stderr, "\t-o dir  : set output directory, defaults to current\n");
+	fprintf(stderr, "\t-d num  : set debug mode (0 = off, 1 - on)\n");
 	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
 }
 
@@ -739,7 +763,7 @@ int main(int argc, char *argv[])
 	int c, cdimg = -1, list = 0, file = -1;
 	char outdir[1024];
 
-	while ((c = getopt(argc, argv, "hvlsc:g:o:p:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsicd:g:o:p:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
@@ -751,15 +775,21 @@ int main(int argc, char *argv[])
 			break;
 		case 'p':
 			strncpy(outdir, optarg, sizeof(outdir) - 1);
-			list = LIST_PUT;
+			list = MODE_PUT;
 			break;
 		case 'l':
-			list = LIST_CD;
+			list = MODE_CD;
 			break;
 		case 's':
-			list = LIST_SHARED;
+			list = MODE_SHARED;
 			break;
-		
+		case 'i':
+			list = MODE_INQUIRY;
+			break;
+		case 'd':
+			list = MODE_DEBUG;
+			file = atoi(optarg);
+			break;
 		case 'v':
 			verbose = 1;
 			break;

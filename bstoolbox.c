@@ -6,13 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <errno.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/dsreq.h>
-#include <invent.h>
+
+#include "os.h"
 
 #define SCSI_INQUIRY    0x12
 #define BLUESCSI_TOOLBOX_COUNT_FILES    0xD2
@@ -58,7 +57,6 @@ enum {
 
 int verbose;
 
-
 typedef struct {
 	unsigned char dev_type; // Peripheral device type (bits 4-7), Peripheral qualifier (bits 0-3)
 	unsigned char dev_type_mod;    //RMB (bit 7), Device-type modifier (bits 0-6)
@@ -77,96 +75,6 @@ typedef struct {
     char name[33];         /* byte 02-34: filename (32 byte max) + space for NUL terminator */
     unsigned char size[5]; /* byte 35-39: file size (40 bit big endian unsigned) */
 } ToolboxFileEntry;
-
-static int scsi_open(char *path)
-{
-	return open(path, O_RDWR | O_SYNC);
-}
-
-
-static int scsi_close(int dev)
-{
-	return close(dev);
-}
-
-
-static int scsi_send_command(int dev, char *cmd, int cmd_len, char *buf, int buf_len)
-{
-	int i;
-	int try;
-	dsreq_t r;
-	memset(&r, 0, sizeof(dsreq_t));
-	
-	/* Assemble the request structure */
-	r.ds_cmdbuf   = (caddr_t) cmd;
-	r.ds_cmdlen   = cmd_len;
-	r.ds_databuf  = (caddr_t) buf;
-	r.ds_datalen  = buf_len;
-	//r.ids_sensebuf = (caddr_t) buf;
-	//r.ds_senselen = buf_len;
-	r.ds_sensebuf = NULL;
-	r.ds_senselen = 0;
-	
-	r.ds_time     = 5 * 1000;  /* 5 seconds should be enough */
-	r.ds_flags    = DSRQ_READ;
-	
-	if (verbose){
-		fprintf(stdout, "Sending SCSI command: ");
-		for (i = 0; i < cmd_len; ++i) {
-			fprintf(stdout, "%02x ", (unsigned char)r.ds_cmdbuf[i]);
-		}
-		fprintf(stdout, "\n");
-	}	
-	/* Issue the request */
-	//if (ioctl(dev, DS_ENTER, &r))
-	//	return -errno;
-	for (try = 0; try < 10; try ++){
-		if (ioctl(dev, DS_ENTER, &r) < 0 || r.ds_status != 0){
-			fprintf(stderr, "WARNING: SCSI command timed out (%d); retrying...\n", r.ds_status);
-			sleep(try + 1);
-		}
-		else
-		  break;
-		if (try >= 10){
-			fprintf(stderr, "ERROR: Unable to send print data (%d)\n",r.ds_status);
-			return (1);
-		}
-	}
-	return 0;
-}
-//TODO Document this or just do it better
-static int scsi_send_commandw(int dev, char *cmd, int cmd_len, char *buf, int buf_len)
-{
-	int i;
-	dsreq_t r;
-	memset(&r, 0, sizeof(dsreq_t));
-	
-	/* Assemble the request structure */
-	r.ds_cmdbuf   = (caddr_t) cmd;
-	r.ds_cmdlen   = cmd_len;
-	r.ds_databuf  = (caddr_t) buf;
-	r.ds_datalen  = buf_len;
-	//r.ids_sensebuf = (caddr_t) buf;
-	//r.ds_senselen = buf_len;
-	r.ds_sensebuf = NULL;
-	r.ds_senselen = 0;
-	
-	r.ds_time     = 5 * 1000;  /* 5 seconds should be enough */
-	r.ds_flags    = DSRQ_WRITE;
-	
-	if (verbose){
-		fprintf(stdout, "Sending SCSI command: ");
-		for (i = 0; i < cmd_len; ++i) {
-			fprintf(stdout, "%02x ", (unsigned char)r.ds_cmdbuf[i]);
-		}
-		fprintf(stdout, "\n");
-	}	
-	/* Issue the request */
-	if (ioctl(dev, DS_ENTER, &r))
-		return -errno;
-	return 0;
-}
-
 
 #define SEND_BUF_SIZE 512
 #define NAME_BUF_SIZE 33
@@ -221,7 +129,7 @@ static int bluescsi_sendfile (int dev, char *path)
 	filesize = st.st_size;
 
 	//Send the name as data
-	if (scsi_send_commandw(dev, cmd, sizeof(cmd), filename, MAX_DATA_LEN) != 0)
+	if (scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)filename, MAX_DATA_LEN) != 0)
 	{
 		fprintf (stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
 			fclose(fd);
@@ -251,9 +159,9 @@ static int bluescsi_sendfile (int dev, char *path)
 		cmd[5] = (buf_idx & 0xFF);
 
 		if (bytes_left < SEND_BUF_SIZE)
-			ret = scsi_send_commandw(dev, cmd, sizeof(cmd), send_buf, bytes_left );
+			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, bytes_left );
 		else
-			ret = scsi_send_commandw(dev, cmd, sizeof(cmd), send_buf, sizeof(send_buf));
+			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, sizeof(send_buf));
 		if (ret != 0)
 		{
 			fprintf (stderr, "Error: sendfile10 failed - %s\n", strerror(errno));
@@ -267,7 +175,7 @@ static int bluescsi_sendfile (int dev, char *path)
 	memset (cmd, 0, sizeof(cmd));
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
 
-	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)NULL, 0) != 0)
 	{
 		fprintf (stderr, "Error: sendfileend failed - %s\n", strerror(errno));
 		fclose(fd);
@@ -287,7 +195,7 @@ static int bluescsi_getdebug (int dev)
 	char buf[1];
 	cmd[1] = DEBUG_GET;//Get debug flag
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
 		fprintf (stderr, "Error: getdebug failed - %s\n", strerror(errno));
 		return -1;
@@ -306,7 +214,7 @@ static int bluescsi_setdebug (int dev, int value)
 		value = 0;
 	cmd[1] = DEBUG_SET;
 	cmd[2] = value;
-	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)NULL, 0) != 0)
 	{
 		fprintf (stderr, "Error: BlueSCSI setdebug failed - %s\n", strerror(errno));
 		return -1;
@@ -325,7 +233,7 @@ static int bluescsi_countfiles(int dev)
 	char buf[1];
 	int ret;
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
 		fprintf (stderr, "Error: countfiles failed - %s\n", strerror(errno));
 		return -1;
@@ -346,7 +254,7 @@ static int bluescsi_countcds(int dev)
 	char buf[1];
 	int ret;
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
 		fprintf (stderr, "Error: countcds failed - %s\n", strerror(errno));
 		return -1;
@@ -384,7 +292,7 @@ static int bluescsi_setnextcd(int dev, int num)
 	cmd[1] = num;
 	if (verbose)
 		fprintf (stdout, "%i set as next CD\n", cmd[1]);	
-	if (scsi_send_command(dev, cmd, 10, NULL, 0) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, 10, (unsigned char *)NULL, 0) != 0)
 	{
 		fprintf (stderr, "Error: setnextcd failed - %s\n", strerror(errno));
 		return -1;
@@ -412,7 +320,7 @@ static int bluescsi_listcds(int dev)
 	
 	buf = (char *)malloc(buf_size);
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, buf_size) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listcds failed - %s\n", strerror(errno));
 		return -1;
@@ -476,7 +384,7 @@ static int bluescsi_listfiles(int dev, int print)
 	
 	buf = (char *)malloc(buf_size);
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, buf_size) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listfiles failed - %s\n", strerror(errno));
 		return -1;
@@ -540,7 +448,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	//TODO timeouts and sanity checks
 	while (1)
 	{	
-		if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+		if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 		{
 			fprintf (stderr, "Error: getfile failed during transfer - %s\n", strerror(errno));
 			fclose (fd);
@@ -592,7 +500,7 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	*outbuf = NULL;
 
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
 		fprintf (stderr, "Error: BlueSCSI listdevices failed - %s\n", strerror(errno));
 		return -1;
@@ -612,7 +520,7 @@ static int bluescsi_inquiry(int dev, int print)
 	scsi_inquiry inq;
 
 	memset(buf, 0, sizeof(buf));
-	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
 		fprintf (stderr, "Error: inquiry command failed - %s\n", strerror(errno));
 		return 1;
@@ -645,8 +553,8 @@ static int bluescsi_inquiry(int dev, int print)
 
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
 {
-	int   dev;
-       	int dev_path_num; //SCSI ID pulled from path
+	int dev;
+	int dev_path_num; //SCSI ID pulled from path
 	int type[8];
 	int i;
 	char *inq = NULL;
@@ -681,16 +589,13 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 			fprintf (stdout, "\n");
 		free(inq);
 	}
-	// Extract the device number from the path 
-	// TODO This will probably break very easily
-    	if (sscanf(path, "/dev/scsi/sc%*dd%dl%*d", &dev_path_num) != 1) {
-        	fprintf(stderr, "ERROR: Invalid path format: %s\n", path);
-        	scsi_close(dev);
-        	return;
-    	}
+
+	if ((dev_path_num = path_to_devnum(path)) < 0)
+		goto close_dev;
+
 	if (verbose)
-    		fprintf(stdout, "dev_path_num %i\n", dev_path_num);
-	
+		fprintf(stdout, "dev_path_num %i\n", dev_path_num);
+
 	if (list == MODE_CD)
 		bluescsi_listcds(dev);
 	else if (list == MODE_INQUIRY)
@@ -710,6 +615,8 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}
+
+close_dev:
 	scsi_close(dev);
 }
 
@@ -731,7 +638,7 @@ static void usage(void)
 	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
 }
 
-static int mediad_start() {
+static int mediad_start(void) {
     int status;
 
     // Starting mediad service
@@ -744,7 +651,7 @@ static int mediad_start() {
     }
     return 0;
 }
-static int mediad_stop() {
+static int mediad_stop(void) {
     int status;
 
     // Stop mediad service

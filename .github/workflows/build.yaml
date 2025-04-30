@@ -1,0 +1,17 @@
+name: Build bstoolbox
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup environment
+      run: sudo apt update && sudo apt install build-essential meson
+
+    - name: Setup build
+      run: meson setup build
+
+    - name: Build
+      run: meson compile -C build

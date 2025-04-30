@@ -670,7 +670,7 @@ int main(int argc, char *argv[])
 	int c, cdimg = -1, list = 0, file = -1;
 	char outdir[1024];
 
-	while ((c = getopt(argc, argv, "hvlsicd:g:o:p:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;

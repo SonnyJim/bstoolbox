@@ -9,4 +9,4 @@ bstoolbox: bstoolbox.c irix.c Makefile
 
 clean:
 	@echo "*** Cleaning up..."
-	@-rm -f bstoolbox core
+	@-rm -f bstoolbox core *.o

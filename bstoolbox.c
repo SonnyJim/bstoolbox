@@ -41,6 +41,8 @@ static int bluescsi_sendfile(int dev, char *path)
 	char *base_name;
 	char send_buf[SEND_BUF_SIZE];
 	long int bytes_read = 0;
+	long int actual_read = 0;
+	int chunk;
 	int buf_idx = 0;
 	int ret;
 	FILE *fd;
@@ -96,10 +98,10 @@ static int bluescsi_sendfile(int dev, char *path)
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_10;
 
 	while (bytes_read < filesize) {
-		int chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
+		chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
 		memset(send_buf, 0, SEND_BUF_SIZE);
 
-		int actual_read = fread(send_buf, 1, chunk, fd);
+		actual_read = fread(send_buf, 1, chunk, fd);
 		if (actual_read <= 0) {
 			fprintf(stderr, "Error: fread failed or returned 0 at offset %ld\n", bytes_read);
 			fclose(fd);

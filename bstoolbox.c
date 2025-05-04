@@ -88,7 +88,7 @@ static int bluescsi_sendfile (int dev, char *path)
 	filesize = st.st_size;
 
 	//Send the name as data
-	if (scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)filename, MAX_DATA_LEN) != 0){
+	if (scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)filename, 33) != 0){//Send filename padded to 33
 		fprintf (stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
 			fclose(fd);
 		return 1;
@@ -119,7 +119,7 @@ static int bluescsi_sendfile (int dev, char *path)
 		if (bytes_left < SEND_BUF_SIZE)
 			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, bytes_left );
 		else
-			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, sizeof(send_buf));
+			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, SEND_BUF_SIZE);
 		if (ret != 0)
 		{
 			fprintf (stderr, "Error: sendfile10 failed - %s\n", strerror(errno));
@@ -452,7 +452,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	//TODO timeouts and sanity checks
 	while (1)
 	{	
-		if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
+		if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, MAX_DATA_LEN) != 0)
 		{
 			fprintf (stderr, "Error: getfile failed during transfer - %s\n", strerror(errno));
 			fclose (fd);

@@ -532,7 +532,7 @@ static int bluescsi_inquiry(int dev, int print)
 	memcpy (&inq.product_id, &buf[16], sizeof(inq.product_id) - 1);
 	inq.product_id[17] = '\0';
 	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
-	inq.product_rev[33] = '\0';
+	inq.product_rev[32] = '\0';
 
 	if (verbose || print)
 	{

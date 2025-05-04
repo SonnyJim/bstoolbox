@@ -508,9 +508,18 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 
 	dev = scsi_open(path, readonly);
 	if (dev < 0) {
-		fprintf(stderr, "ERROR: Cannot open device: %s\nTry running again as root\n", strerror(errno));
-		exit(1);
+		if (!readonly)
+		{
+			fprintf (stderr, "Error opening device for read/write, trying to open readonly\n");
+			dev = scsi_open(path, 1); //Try to open the device as read only
+			
+		}
+		if (dev < 0) {
+			fprintf(stderr, "ERROR: Cannot open device: %s\nTry running again as root\n", strerror(errno));
+			exit(1);
+		}
 	}
+
 	if (verbose)	
 		printf("Opened dev %i %s:\n", dev, path);
 	

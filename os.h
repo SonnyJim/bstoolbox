@@ -4,3 +4,6 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 int scsi_close(int dev);
 
 int path_to_devnum(const char *path);
+
+int mediad_start(void); //Helper functions to start and stop the removable device damons
+int mediad_stop(void);

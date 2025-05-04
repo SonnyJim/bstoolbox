@@ -433,6 +433,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	if (verbose)
 		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
 	filename = malloc (strlen(outdir) + strlen(files[idx].name));
+	fprintf (stdout, "Fetching %s\n", files[idx].name);
 	strcpy (filename, outdir);
 	strcat (filename, files[idx].name);
 	if (verbose)
@@ -543,7 +544,6 @@ static int bluescsi_inquiry(int dev, int print)
 
 	if (verbose || print)
 	{
-		fprintf (stdout, "dev number: %i\n", dev);
 		fprintf (stdout, "SCSI version: %i\n", inq.version);
 		fprintf (stdout, "vendor_id: %s \nproduct_id: %s\n", inq.vendor_id, inq.product_id);
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);

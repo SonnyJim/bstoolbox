@@ -1,11 +1,43 @@
 /*
- * BlueSCSI v2 IRIX tools
+ * BlueSCSI v2 IRIX and Linux toolbox
  */
 #include "bstoolbox.h"
 
+/*
+ * Sending Files
+ * Sending files from the Host to the SD card is a three-step process:
+ *
+ * BLUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3 to prepare a file on the SD card for receiving.
+ * BLUESCSI_TOOLBOX_SEND_FILE_10 0xD4 to send the actual data of the file.
+ * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5 to close the file.
+ */
+
+/*
+ * LUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3
+ * Prepares a file on the SD card in the ToolBoxSharedDir (Default /shared) for receiving.
+ *
+ * The file name is 33 char name sent in the SCSI data, null terminated. The name should only contain valid characters for file names on FAT32/ExFAT.
+ *
+ * If the file is not able to be created a CHECK_CONDITION ILLEGAL_REQUEST is set as the sense.
+ *
+ * BLUESCSI_TOOLBOX_SEND_FILE_10 0xD4
+ * Receive data from the host in blocks of 512 bytes.
+ *
+ * CDB[1..2] - Number of bytes sent in this request. Big endian. Minimum 1, maximum 512.
+ *
+ * CDB[3..5] - Block number in the file for these bytes. Big endian.
+ *
+ * If the file has a write error sense will be set as CHECK_CONDITION ILLEGAL_REQUEST. You may try to resend the block or fail and call BLUESCSI_TOOLBOX_SEND_FILE_END
+ *
+ * NOTE: The number of bytes sent should be 512 in all but the final block of the file.
+ *
+ * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5
+ * Once the file is completely sent this command will close the file.
+ */
+
 static int bluescsi_sendfile (int dev, char *path)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
+	char cmd[10] = {BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0}; //SCSI command to send
 	char filename[NAME_BUF_SIZE];
 	char *base_name;
 	char send_buf[SEND_BUF_SIZE]; //Send buffer is 512 bytes
@@ -16,9 +48,11 @@ static int bluescsi_sendfile (int dev, char *path)
 	FILE *fd;
 	long int filesize;
 	struct stat st; //Struct to get filesize
+	
 	if (verbose)
 		fprintf (stdout, "sendfile: %s\n", path);
-
+	
+	//Clear the send bnffer
 	memset(send_buf, 0, sizeof(send_buf));
 	// Extract filename from path
 	base_name = strrchr(path, '/');
@@ -27,20 +61,21 @@ static int bluescsi_sendfile (int dev, char *path)
 	} else {
 		base_name++; // Move past '/'
 	}
-	    // Ensure filename fits in buffer
+	// Ensure filename fits in buffer
 	if (strlen(base_name) >= NAME_BUF_SIZE) {
 		fprintf(stderr, "Error: sendfile Filename too long: %s\n", base_name);
 		return -1;
 	}
 	strncpy(filename, base_name, NAME_BUF_SIZE);
 	filename[NAME_BUF_SIZE - 1] = '\0'; // Ensure null-termination
-
+	
+	//Open the file to be sent
 	fd = fopen(path, "rb");
-	if ( fd == NULL)
-	{
+	if ( fd == NULL){
 		fprintf (stderr, "Error: sendfile couldn't open %s\n", path);
 		return 1;
 	}
+
     	// Use stat to get file size
     	if (stat(path, &st) == 0) {
 		if (verbose)
@@ -53,8 +88,7 @@ static int bluescsi_sendfile (int dev, char *path)
 	filesize = st.st_size;
 
 	//Send the name as data
-	if (scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)filename, MAX_DATA_LEN) != 0)
-	{
+	if (scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)filename, MAX_DATA_LEN) != 0){
 		fprintf (stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
 			fclose(fd);
 		return 1;
@@ -96,6 +130,7 @@ static int bluescsi_sendfile (int dev, char *path)
 		bytes_left = filesize - bytes_read;
 	
 	}
+	//Finished sending, send file end command
 	memset (cmd, 0, sizeof(cmd));
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
 
@@ -106,12 +141,21 @@ static int bluescsi_sendfile (int dev, char *path)
 		return 1;
 	}
 
-
 	fclose(fd);
 	return 0;
 }
 
-//Check and set debug status
+/*
+ * BLUESCSI_TOOLBOX_TOGGLE_DEBUG 0xD6
+ * Enable or disable Debug logs. Also allows you to get the current status.
+ *
+ * If CDB[1] is set to 0 it is the subcommand Set Debug. The value of CDB[2] is used as the boolean value for the debug flag.
+ *
+ * If CDB[1] is set to 1 it is the subcommand Get Debug. The boolean value is sent as a 1 byte value.
+ *
+ * NOTE: Debug logs significantly decrease performance while enabled. When your app enables debug you MUST notify them of the decreased performance.
+ */
+
 static int bluescsi_getdebug (int dev)
 {
 	int ret;
@@ -149,8 +193,13 @@ static int bluescsi_setdebug (int dev, int value)
 	return 0;
 }
 
+/*
+ * BLUESCSI_TOOLBOX_COUNT_FILES 0xD2
+ * Counts the number of files in the ToolBoxSharedDir (default /shared). The purpose is to allow the host program to know how much data will be sent back by the List files function.
+ *
+ * This can be sent to any valid BlueSCSI target.
+ */
 
-//Returns the number of files in the /shared directory
 static int bluescsi_countfiles(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_COUNT_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
@@ -223,7 +272,12 @@ static int bluescsi_setnextcd(int dev, int num)
 	}
 	return 0;
 }
-
+/*
+ * BLUESCSI_TOOLBOX_LIST_CDS 0xD7
+ * Lists all the files for the current directory for the selected SCSI ID target. Eg: When selecting SCSI ID 3 it will look for a CD3 folder and list files from there. The structure is ToolboxFileEntry.
+ *
+ * NOTE: Since there is no universal name for a CD image there is no filtering done on the lists of files.
+ */
 static int bluescsi_listcds(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -269,9 +323,7 @@ static int bluescsi_listcds(int dev)
 	return 1;
 }
 
-ToolboxFileEntry files[MAX_FILES];
-int files_count;
-
+//Helper function to convert 40bit size into a long
 static long int size_to_long(const unsigned char size[5])
 {
     int i;
@@ -283,6 +335,26 @@ static long int size_to_long(const unsigned char size[5])
     return result;
 }
 
+/*
+ * Receiving Files
+ * The Host machine can read files directly off the SD card and write them to the Host.
+ *
+ * To receive files
+ *
+ * Count and list the files with BLUESCSI_TOOLBOX_COUNT_FILES 0xD2 and BLUESCSI_TOOLBOX_LIST_FILES 0xD0.
+ * Use the file index and byte offset to transfer the desired file with BLUESCSI_TOOLBOX_GET_FILE 0xD1.
+ *
+ */
+
+
+/*
+ * BLUESCSI_TOOLBOX_LIST_FILES 0xD0
+ * Returns a list of files in the ToolBoxSharedDir (Default /shared) in a ToolboxFileEntry struct
+ * NOTE: File names are truncated to 32 chars - but can still be transferred. 
+ * NOTE: You may need to convert characters that are valid file names on FAT32/ExFat to support the hosts native character encoding and file name limitations. 
+ * NOTE: Currently the response is limited to 100 entries, Will return 
+ * NOTE: BlueSCSI only transfers as many entries as are actually present. You should request the file count first, then size your receive buffer to match that number of entries.
+ */
 static int bluescsi_listfiles(int dev, int print)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -324,8 +396,15 @@ static int bluescsi_listfiles(int dev, int print)
 	}
 	return 0;
 }
+/*
+ * BLUESCSI_TOOLBOX_GET_FILE 0xD1
+ * Transfers a file from the ToolBoxSharedDir (Default /shared) to the Host computer.
+ *
+ * CDB[1] contains the index of the file to transfer.
+ *
+ * CDB[2..5] contains the offset in the file in 4096 byte blocks. Big endian.
+ */
 
-//Get file from /shared directory, grabbed in chunks of 4096
 static int bluescsi_getfile(int dev, int idx, char *outdir)
 {
 	char cmd[10];

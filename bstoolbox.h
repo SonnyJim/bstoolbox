@@ -84,3 +84,7 @@ typedef struct {
     char name[NAME_BUF_SIZE];         /* byte 02-34: filename (32 byte max) + space for NUL terminator */
     unsigned char size[5]; /* byte 35-39: file size (40 bit big endian unsigned) */
 } ToolboxFileEntry;
+
+ToolboxFileEntry files[MAX_FILES];
+int files_count;
+

@@ -4,6 +4,7 @@
 #include <sys/ioctl.h>
 #include <scsi/sg.h>
 #include <string.h>
+#include <errno.h>
 
 #include "os.h"
 
@@ -137,31 +138,36 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 	return 0;
 }
 
-// Extract the numeric part of /dev/sgN or /dev/srN
+/**
+ * Extract the SCSI ID from a /dev/sgX device path.
+ * Returns: SCSI ID on success, -1 on failure.
+ */
 int path_to_devnum(const char *path) {
-    int dev_path_num;
+    struct sg_scsi_id scsi_id;
+    int fd;
 
-    // Match /dev/sg0, /dev/sg1, etc.
-    if (sscanf(path, "/dev/sg%d", &dev_path_num) == 1) {
-        return dev_path_num;
-    }
-    // Linux pattern: /dev/sdX where X is A-Z
-    else if (strncmp(path, "/dev/sd", 7) == 0 && strlen(path) == 8) {
-        char drive_letter = path[7];
-        if (drive_letter >= 'a' && drive_letter <= 'z') {
-            return drive_letter - 'a';
-        } else if (drive_letter >= 'A' && drive_letter <= 'Z') {
-            return drive_letter - 'A';
-        } else {
-            fprintf(stderr, "ERROR: Invalid device letter: %c\n", drive_letter);
-            return -1;
-        }
-    } 
-    // Match /dev/sr0, /dev/sr1 (SCSI CD-ROMs)
-    else if (sscanf(path, "/dev/sr%d", &dev_path_num) == 1) {
-        return dev_path_num;
+    // Validate the path format
+    if (strncmp(path, "/dev/sg", 7) != 0 || strlen(path) < 8) {
+        fprintf(stderr, "ERROR: Unsupported device path format: %s\n", path);
+        return -1;
     }
 
-    fprintf(stderr, "ERROR: Invalid or unsupported Linux device path format: %s\n", path);
-    return -1;
+    // Open the device
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "ERROR: Failed to open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    // Attempt to get the SCSI ID
+    if (ioctl(fd, SG_GET_SCSI_ID, &scsi_id) < 0) {
+        fprintf(stderr, "ERROR: ioctl SG_GET_SCSI_ID failed on %s: %s\n", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    if (verbose)
+	    fprintf(stderr, "Found something at SCSI ID%i\n", scsi_id.scsi_id);
+    return scsi_id.scsi_id;
 }

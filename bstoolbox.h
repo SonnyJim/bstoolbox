@@ -41,6 +41,8 @@ typedef enum
 	TYPE_SEQUENTIAL = 0x05
 } dev_type;
 
+dev_type device_list[8];
+
 enum {
 	MODE_NONE, 
 	MODE_CD,

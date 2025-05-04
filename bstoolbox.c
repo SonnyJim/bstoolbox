@@ -233,9 +233,9 @@ static int bluescsi_listcds(int dev)
 	int num_cds;
 
 	num_cds = bluescsi_countcds (dev);
-	if (num_cds == 0 || num_cds > MAX_FILES)
+	if (num_cds < 0 || num_cds > MAX_FILES)
 	{
-		fprintf (stderr, "Error:  CD number requested invalid, is device a CD?: %i\n", num_cds);
+		fprintf (stderr, "Error:  CD number requested invalid: %i\n", num_cds);
 		return -1;
 	}
 	fprintf (stdout, "Found %i CDs\n", num_cds);
@@ -444,7 +444,6 @@ static int bluescsi_inquiry(int dev, int print)
 	const char *BlueSCSI_ID = "BlueSCSI";
 	scsi_inquiry inq;
 	int i;
-	int device_type;
 	char* dev_flags;
 
 	memset(buf, 0, sizeof(buf));
@@ -453,6 +452,7 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stderr, "Error: inquiry command failed - %s\n", strerror(errno));
 		return 1;
 	}
+	//Clear and fill the buffer with the inquiry data
 	memset (&inq, 0, sizeof(scsi_inquiry));
 	memcpy (&inq.version, &buf[2], 1);
 	memcpy (&inq.vendor_id, &buf[8], sizeof(inq.vendor_id) - 1);
@@ -464,6 +464,7 @@ static int bluescsi_inquiry(int dev, int print)
 
 	if (verbose || print)
 	{
+		fprintf (stdout, "dev number: %i\n", dev);
 		fprintf (stdout, "SCSI version: %i\n", inq.version);
 		fprintf (stdout, "vendor_id: %s \nproduct_id: %s\n", inq.vendor_id, inq.product_id);
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
@@ -472,33 +473,40 @@ static int bluescsi_inquiry(int dev, int print)
 	
 	//Get the 8 byte device flags to see what type it is
 	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
-		if (verbose){
+		if (verbose)
 			fprintf (stdout, "Device flags: ");
-			for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++)
+		{
+			device_list[i] = dev_flags[i]; //Write the falgs to the device list
+			if (verbose)
 				fprintf (stdout,"%02x ", (unsigned char) dev_flags[i]);
-			fprintf(stdout, "\n");
 		}
+		if (verbose)
+			fprintf(stdout, "\n");
+		free(dev_flags);
+
 
 	}
-	//bit 6 holds the device type?
-	device_type = dev_flags[6];
-	free(dev_flags);
-	fprintf (stdout, "device type: %i\n", device_type);
+	else {
+		fprintf (stderr, "Failed to fetch device flags with bluescsi_listdevices(): %s\n", strerror(errno));
+		free(dev_flags);
+		return 1;
+	}
+
 	//TODO Once a BlueSCSI drive is found, send a MODE SENSE 0x1A command for page 0x31. Validate it against the BlueSCSIVendorPage (see: mode.c)
 	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
-		return device_type; //TODO FIX FIX FIX HDD 
+		return 0; //TODO FIX FIX FIX HDD 
 	else
 	{
 		fprintf (stderr, "Error: didn't find ID %s in product_rev\n", BlueSCSI_ID);
-		return TYPE_NONE;
+		return 1;
 	}
 }
 
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
 {
 	int dev;
-	int dev_path_num; //SCSI ID pulled from path
-	int device_type;
+	int dev_scsi_id; //SCSI ID pulled from path
 	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
 	readonly = 0;
 	
@@ -520,26 +528,29 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		}
 	}
 
-	if (verbose)	
-		printf("Opened dev %i %s:\n", dev, path);
-	
 	//Do inquiry to check we are working with a BlueSCSI
-	device_type = bluescsi_inquiry (dev, PRINT_OFF);
-	if (device_type == TYPE_NONE)
+	//device_type = bluescsi_inquiry (dev, PRINT_OFF);
+	if (bluescsi_inquiry (dev, PRINT_OFF) != 0)
 	{
 		fprintf (stderr, "Didn't find a BlueSCSI device at %s\n", path);
 		scsi_close (dev);
 		exit(1);
 	}
 	
-	if ((dev_path_num = path_to_devnum(path)) < 0)
+	if ((dev_scsi_id = path_to_devnum(path)) < 0)
 		goto close_dev;
 
-	if (verbose)
-		fprintf(stdout, "dev_path_num %i\n", dev_path_num);
-
 	if (list == MODE_CD)
-		bluescsi_listcds(dev);
+	{
+		if (device_list[dev_scsi_id] != TYPE_CD)
+		{
+			fprintf (stderr, "Tried to list CDs, but an emulated CD drive wasn't detected\n");
+			scsi_close(dev);
+			exit(1);
+		}
+		else
+			bluescsi_listcds(dev);
+	}
 	else if (list == MODE_INQUIRY)
 		bluescsi_inquiry(dev, PRINT_ON);
 	else if (list == MODE_DEBUG)
@@ -552,8 +563,8 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		bluescsi_getfile (dev, file, outdir);
 	else if (cd_img != NOT_ACTIVE)
 	{
-		if (device_type != TYPE_CD)
-			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected %i, %i\n", device_type, dev_path_num);
+		if (device_list[dev_scsi_id] != TYPE_CD)
+			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected type %i on SCSI ID %i\n", device_list[dev_scsi_id], dev_scsi_id);
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}
@@ -565,7 +576,11 @@ close_dev:
 static void usage(void)
 {
 	fprintf(stderr, "\nUsage:   bstoolbox [options] [device]\n\n");
-	fprintf(stderr, "Example: bstoolbox -s /dev/scsi/sc0d1l0\n\n");
+#if defined(OS_IRIX)
+	fprintf(stderr, "example: bstoolbox -s /dev/scsi/sc0d1l0\n\n");
+#elif defined(OS_LINUX)
+	fprintf(stderr, "example: bstoolbox -s /dev/sg2\n\n");
+#endif
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h      : display this help message and exit\n");
 	fprintf(stderr, "\t-v      : be verbose\n");

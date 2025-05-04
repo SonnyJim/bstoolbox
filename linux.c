@@ -1,3 +1,7 @@
+/*
+ * This file contains the code for talking to SCSI devices on Linux
+ */
+
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -9,16 +13,19 @@
 #include "os.h"
 
 extern int verbose;
-int mediad_start(void) {
+//Run when a CD is changed
+//TODO Is there a systemd way of doing this?
+int mediad_start(void) 
+{
 	fprintf(stderr, "mediad_start(): Not implemented on Linux\n");
     	return 1;
 }
 
-int mediad_stop(void) {
+int mediad_stop(void) 
+{
 	fprintf(stderr, "mediad_stop(): Not implemented on Linux\n");
     	return 1;
 }
-
 
 int scsi_open(char *path, int readonly)
 {
@@ -28,7 +35,6 @@ int scsi_open(char *path, int readonly)
 	else
 		return open(path, O_RDWR | O_SYNC);
 }
-
 
 int scsi_close(int dev)
 {
@@ -60,24 +66,6 @@ int scsi_send_command(int dev, unsigned char *cmd, int cmd_len, unsigned char *b
 
 	if (ioctl(dev, SG_IO, &io_hdr) < 0)
 		return 1;
-
-#if 0
-	/* Issue the request */
-	//if (ioctl(dev, DS_ENTER, &r))
-	//	return -errno;
-	for (try = 0; try < 10; try ++){
-		if (ioctl(dev, DS_ENTER, &r) < 0 || r.ds_status != 0){
-			fprintf(stderr, "WARNING: SCSI command timed out (%d); retrying...\n", r.ds_status);
-			sleep(try + 1);
-		}
-		else
-		  break;
-		if (try >= 10){
-			fprintf(stderr, "ERROR: Unable to send print data (%d)\n",r.ds_status);
-			return (1);
-		}
-	}
-#endif
 
 	return 0;
 }

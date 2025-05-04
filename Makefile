@@ -1,22 +1,24 @@
 CC = cc
-OBJS = bstoolbox.c
+CFLAGS =
+OBJS =
 
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-	CFLAGS = -O2
-	OBJS += linux.c
-endif
-ifeq ($(UNAME_S),IRIX)
-	CFLAGS = -mips3 -n32 -O2
-	OBJS += irix.c
-endif
+# Default target
+default: bstoolbox
 
-default all: bstoolbox
-
-bstoolbox: $(OBJS) Makefile
-	@echo "*** Compiling: $@ (OS: $(UNAME_S))"
-	@$(CC) -o $@ $(CFLAGS) $(OBJS)
+# Use shell to detect OS and set CFLAGS and OBJS
+bstoolbox:
+	@OS=`uname -s`; \
+	if [ "$$OS" = "Linux" ]; then \
+		CFLAGS="-O2"; OBJS="bstoolbox.c linux.c"; \
+	elif [ "$$OS" = "IRIX64" ]; then \
+		CFLAGS="-mips3 -n32 -O2"; OBJS="bstoolbox.c irix.c"; \
+	else \
+		echo "Unsupported OS: $$OS"; exit 1; \
+	fi; \
+	echo "*** Compiling: bstoolbox (OS: $$OS)"; \
+	$(CC) -o bstoolbox $$CFLAGS $$OBJS
 
 clean:
 	@echo "*** Cleaning up..."
 	@-rm -f bstoolbox core *.o
+

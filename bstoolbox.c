@@ -34,109 +34,102 @@
  * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5
  * Once the file is completely sent this command will close the file.
  */
-
-static int bluescsi_sendfile (int dev, char *path)
+static int bluescsi_sendfile(int dev, char *path)
 {
-	char cmd[10] = {BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0}; //SCSI command to send
+	char cmd[10] = { BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	char filename[NAME_BUF_SIZE];
 	char *base_name;
-	char send_buf[SEND_BUF_SIZE]; //Send buffer is 512 bytes
+	char send_buf[SEND_BUF_SIZE];
 	long int bytes_read = 0;
-	long int bytes_left = 0;
-	int buf_idx= 0; //offset in 512 byte chunks
+	int buf_idx = 0;
 	int ret;
 	FILE *fd;
 	long int filesize;
-	struct stat st; //Struct to get filesize
-	
+	struct stat st;
+
 	if (verbose)
-		fprintf (stdout, "sendfile: %s\n", path);
-	
-	//Clear the send bnffer
+		fprintf(stdout, "sendfile: %s\n", path);
+
 	memset(send_buf, 0, sizeof(send_buf));
-	// Extract filename from path
+	//TODO Copnsider using basename()
+	// Extract base filename
 	base_name = strrchr(path, '/');
 	if (base_name == NULL) {
-		base_name = path; // No '/' found, the path is the filename
+		base_name = path;
 	} else {
-		base_name++; // Move past '/'
+		base_name++; // skip the slash
 	}
-	// Ensure filename fits in buffer
+
 	if (strlen(base_name) >= NAME_BUF_SIZE) {
 		fprintf(stderr, "Error: sendfile Filename too long: %s\n", base_name);
 		return -1;
 	}
-	strncpy(filename, base_name, NAME_BUF_SIZE);
-	filename[NAME_BUF_SIZE - 1] = '\0'; // Ensure null-termination
-	
-	//Open the file to be sent
+
+	memset(filename, 0, NAME_BUF_SIZE);
+	strncpy(filename, base_name, NAME_BUF_SIZE - 1);
+
+	// Open file
 	fd = fopen(path, "rb");
-	if ( fd == NULL){
-		fprintf (stderr, "Error: sendfile couldn't open %s\n", path);
+	if (fd == NULL) {
+		fprintf(stderr, "Error: sendfile couldn't open %s\n", path);
 		return 1;
 	}
 
-    	// Use stat to get file size
-    	if (stat(path, &st) == 0) {
+	if (stat(path, &st) == 0) {
 		if (verbose)
 			printf("File size of %s is %lld bytes\n", filename, (long long)st.st_size);
 	} else {
-		fprintf (stderr, "Error: sendfile couldn't stat %s\n", path);
+		fprintf(stderr, "Error: sendfile couldn't stat %s\n", path);
 		fclose(fd);
-        	return 1;
-    	}
-	filesize = st.st_size;
-
-	//Send the name as data
-	if (scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)filename, 33) != 0){//Send filename padded to 33
-		fprintf (stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
-			fclose(fd);
 		return 1;
 	}
-	
-	//Construct the command and start sending the file
+	filesize = st.st_size;
+
+	// Send filename
+	if (scsi_send_commandw(dev, (unsigned char *)cmd, SCSI_CMD_LENGTH, (unsigned char *)filename, 33) != 0) {
+		fprintf(stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
+		fclose(fd);
+		return 1;
+	}
+
+	// Prepare to send file data
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_10;
-	
-	while (bytes_read < filesize){
-		
-		if (bytes_left < SEND_BUF_SIZE)
-		{
-			bytes_read += fread(send_buf, 1, bytes_left, fd); 
-			cmd[1] = (bytes_left & 0xFF00) >> 8;
-			cmd[2] = (bytes_left & 0xFF);
+
+	while (bytes_read < filesize) {
+		int chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
+		memset(send_buf, 0, SEND_BUF_SIZE);
+
+		int actual_read = fread(send_buf, 1, chunk, fd);
+		if (actual_read <= 0) {
+			fprintf(stderr, "Error: fread failed or returned 0 at offset %ld\n", bytes_read);
+			fclose(fd);
+			return 1;
 		}
-		else
-		{
-			cmd[1] = (sizeof(send_buf) & 0xFF00) >> 8;
-			cmd[2] = (sizeof(send_buf) & 0xFF);
-			bytes_read += fread(send_buf, 1, sizeof(send_buf), fd); 
-		}
+
+		cmd[1] = (actual_read & 0xFF00) >> 8;
+		cmd[2] = (actual_read & 0xFF);
 
 		cmd[3] = (buf_idx & 0xFF0000) >> 16;
 		cmd[4] = (buf_idx & 0xFF00) >> 8;
 		cmd[5] = (buf_idx & 0xFF);
 
-		if (bytes_left < SEND_BUF_SIZE)
-			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, bytes_left );
-		else
-			ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, SEND_BUF_SIZE);
-		if (ret != 0)
-		{
-			fprintf (stderr, "Error: sendfile10 failed - %s\n", strerror(errno));
+		ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, actual_read);
+		if (ret != 0) {
+			fprintf(stderr, "Error: sendfile10 failed - %s\n", strerror(errno));
 			fclose(fd);
 			return 1;
 		}
+
+		bytes_read += actual_read;
 		buf_idx++;
-		bytes_left = filesize - bytes_read;
-	
 	}
-	//Finished sending, send file end command
-	memset (cmd, 0, sizeof(cmd));
+
+	// Send file end command
+	memset(cmd, 0, sizeof(cmd));
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
 
-	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)NULL, 0) != 0)
-	{
-		fprintf (stderr, "Error: sendfileend failed - %s\n", strerror(errno));
+	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), NULL, 0) != 0) {
+		fprintf(stderr, "Error: sendfileend failed - %s\n", strerror(errno));
 		fclose(fd);
 		return 1;
 	}
@@ -144,6 +137,7 @@ static int bluescsi_sendfile (int dev, char *path)
 	fclose(fd);
 	return 0;
 }
+
 
 /*
  * BLUESCSI_TOOLBOX_TOGGLE_DEBUG 0xD6
@@ -445,8 +439,8 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 		return -1;
 	}
 	memset(buf, 0, sizeof(buf));
-	bytes_left = 0;
 	bytes_written = 0;
+	bytes_left = 0;
 
 	//Read the data from the SCSI bus and store to disk 
 	//TODO timeouts and sanity checks
@@ -516,7 +510,7 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	return 0;
 }
 
-//Returns zero on success
+//Interrogate the device and find out it's capabilties
 static int bluescsi_inquiry(int dev, int print)
 {
 	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};	

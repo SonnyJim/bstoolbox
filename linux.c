@@ -92,33 +92,32 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 			fprintf(stdout, "%02x ", (unsigned char) io_hdr.cmdp[i]);
 		}
 		fprintf(stdout, "\n");
-	}
-	
-	fprintf(stdout, "Data to device (%d bytes):\n", buf_len);
-	for (i = 0; i < buf_len; i += 16) {
-		int j;
-		fprintf(stdout, "  %04x: ", i);
+		fprintf(stdout, "Data to device (%d bytes):\n", buf_len);
+		for (i = 0; i < buf_len; i += 16) {
+			int j;
+			fprintf(stdout, "  %04x: ", i);
 
-		// Hex part
-		for (j = 0; j < 16; ++j) {
-		    if (i + j < buf_len) {
-			fprintf(stdout, "%02x ", buf[i + j]);
-		    } else {
-			fprintf(stdout, "   "); // padding
-		    }
+			// Hex part
+			for (j = 0; j < 16; ++j) {
+			    if (i + j < buf_len) {
+				fprintf(stdout, "%02x ", buf[i + j]);
+			    } else {
+				fprintf(stdout, "   "); // padding
+			    }
+			}
+
+			fprintf(stdout, " |");
+
+			// ASCII part
+			for (j = 0; j < 16; ++j) {
+			    if (i + j < buf_len) {
+				unsigned char c = buf[i + j];
+				fprintf(stdout, "%c", (c >= 32 && c <= 126) ? c : '.');
+			    }
+			}
+
+			fprintf(stdout, "|\n");
 		}
-
-		fprintf(stdout, " |");
-
-		// ASCII part
-		for (j = 0; j < 16; ++j) {
-		    if (i + j < buf_len) {
-			unsigned char c = buf[i + j];
-			fprintf(stdout, "%c", (c >= 32 && c <= 126) ? c : '.');
-		    }
-		}
-
-	        fprintf(stdout, "|\n");
 	}
 	if (ioctl(dev, SG_IO, &io_hdr) < 0)
 		return 1;

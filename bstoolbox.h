@@ -28,7 +28,7 @@
 #define SEND_BUF_SIZE 512
 #define NAME_BUF_SIZE 33
 #define NOT_ACTIVE -1
-
+#define SCSI_CMD_LENGTH 10 //Almost all of the SCSI commands we send are 10 big
 //Copied from scsi2sd.h
 typedef enum
 {

@@ -559,8 +559,8 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	int i;
 	char *inq = NULL;
 	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
-
-	if (list == MODE_CD)
+	readonly = 0;
+	if (list == MODE_CD) //TODO Probably need to detect more modes here
 	       readonly = 1;
 
 	dev = scsi_open(path, readonly);

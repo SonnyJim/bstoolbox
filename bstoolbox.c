@@ -3,8 +3,6 @@
  */
 #include "bstoolbox.h"
 
-static int cddrve_present;
-
 static int bluescsi_sendfile (int dev, char *path)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
@@ -500,12 +498,9 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 {
 	int dev;
 	int dev_path_num; //SCSI ID pulled from path
-	unsigned char type[8];
-	int i;
-	char *inq = NULL;
+	int device_type;
 	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
 	readonly = 0;
-	int device_type;
 	
 	//Open the device read only if we are attempting a CD operation
 	if (list == MODE_CD || cd_img != NOT_ACTIVE) //TODO Probably need to detect more modes here
@@ -549,7 +544,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	else if (cd_img != NOT_ACTIVE)
 	{
 		if (device_type != TYPE_CD)
-			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected %i, %i\n", type[dev_path_num], dev_path_num);
+			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected %i, %i\n", device_type, dev_path_num);
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}

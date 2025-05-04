@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <scsi/sg.h>
+#include <string.h>
 
 #include "os.h"
 
@@ -144,9 +145,20 @@ int path_to_devnum(const char *path) {
     if (sscanf(path, "/dev/sg%d", &dev_path_num) == 1) {
         return dev_path_num;
     }
-
+    // Linux pattern: /dev/sdX where X is A-Z
+    else if (strncmp(path, "/dev/sd", 7) == 0 && strlen(path) == 8) {
+        char drive_letter = path[7];
+        if (drive_letter >= 'a' && drive_letter <= 'z') {
+            return drive_letter - 'a';
+        } else if (drive_letter >= 'A' && drive_letter <= 'Z') {
+            return drive_letter - 'A';
+        } else {
+            fprintf(stderr, "ERROR: Invalid device letter: %c\n", drive_letter);
+            return -1;
+        }
+    } 
     // Match /dev/sr0, /dev/sr1 (SCSI CD-ROMs)
-    if (sscanf(path, "/dev/sr%d", &dev_path_num) == 1) {
+    else if (sscanf(path, "/dev/sr%d", &dev_path_num) == 1) {
         return dev_path_num;
     }
 

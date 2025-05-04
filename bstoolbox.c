@@ -517,6 +517,8 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 			fprintf (stdout, "\n");
 		free(inq);
 	}
+	else
+		goto close_dev;
 
 	if ((dev_path_num = path_to_devnum(path)) < 0)
 		goto close_dev;

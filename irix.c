@@ -9,10 +9,15 @@
 
 extern int verbose;
 
-int scsi_open(char *path)
+int scsi_open(char *path, bool readonly)
 {
-	return open(path, O_RDWR | O_SYNC);
+	if (readonly)
+		return open(path, O_RDONLY | O_SYNC);
+	
+	else
+		return open(path, O_RDWR | O_SYNC);
 }
+
 
 
 int scsi_close(int dev)

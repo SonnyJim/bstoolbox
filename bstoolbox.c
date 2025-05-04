@@ -558,10 +558,14 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	int type[8];
 	int i;
 	char *inq = NULL;
+	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
 
-	dev = scsi_open(path);
+	if (list == MODE_CD)
+	       readonly = 1;
+
+	dev = scsi_open(path, readonly);
 	if (dev < 0) {
-		fprintf(stderr, "ERROR: Cannot open device: %s\n", strerror(errno));
+		fprintf(stderr, "ERROR: Cannot open device: %s\n Try running again as root\n", strerror(errno));
 		exit(1);
 	}
 	if (verbose)	

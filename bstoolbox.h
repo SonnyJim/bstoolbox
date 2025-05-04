@@ -29,10 +29,16 @@
 #define NAME_BUF_SIZE 33
 #define NOT_ACTIVE -1
 
-enum {
-	TYPE_NONE = 255,
+//Copied from scsi2sd.h
+typedef enum
+{
+	TYPE_NONE = 0xFF,
 	TYPE_HDD = 0x00,
-	TYPE_CD = 0x02
+	TYPE_REMOVABLE = 0x01,
+	TYPE_CD = 0x02,
+	TYPE_FLOPPY = 0x03,
+	TYPE_MO = 0x04,
+	TYPE_SEQUENTIAL = 0x05
 } dev_type;
 
 enum {

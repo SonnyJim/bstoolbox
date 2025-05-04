@@ -382,6 +382,7 @@ static int bluescsi_listfiles(int dev, int print)
 	//Copy SCSI data to global files var	
 	for (i = 0; i < num_files; i++) {
 		memcpy(&files[i], buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
+		files[i].name[sizeof(files[i].name) - 1] = '\0';
 	}
 	if (verbose || print)
 	{	

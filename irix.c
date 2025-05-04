@@ -9,6 +9,35 @@
 
 extern int verbose;
 
+int mediad_start(void) {
+    int status;
+
+    // Starting mediad service
+    if (verbose)
+    	fprintf (stdout, "Starting mediad...\n");
+    status = system("/etc/init.d/mediad start");
+    if (status != 0) {
+        fprintf(stderr, "Failed to start mediad service: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+int mediad_stop(void) {
+    int status;
+
+    // Stop mediad service
+    if (verbose)
+    	fprintf (stdout, "Stopping mediad...\n");
+    status = system("/etc/init.d/mediad stop");
+    if (status != 0) {
+        fprintf(stderr, "Failed to stop mediad service: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+
 int scsi_open(char *path, int readonly)
 {
 	if (readonly)

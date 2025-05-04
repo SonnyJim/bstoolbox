@@ -3,6 +3,8 @@
  */
 #include "bstoolbox.h"
 
+static int cddrve_present;
+
 static int bluescsi_sendfile (int dev, char *path)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
@@ -435,6 +437,7 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	}
 	return 0;
 }
+
 //Returns zero on success
 static int bluescsi_inquiry(int dev, int print)
 {
@@ -442,6 +445,9 @@ static int bluescsi_inquiry(int dev, int print)
 	char buf[sizeof(scsi_inquiry)];
 	const char *BlueSCSI_ID = "BlueSCSI";
 	scsi_inquiry inq;
+	int i;
+	int device_type;
+	char* dev_flags;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
@@ -465,13 +471,28 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
 		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
 	}
+	
+	//Get the 8 byte device flags to see what type it is
+	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
+		if (verbose){
+			fprintf (stdout, "Device flags: ");
+			for (i = 0; i < 8; i++)
+				fprintf (stdout,"%02x ", (unsigned char) dev_flags[i]);
+			fprintf(stdout, "\n");
+		}
+
+	}
+	//bit 6 holds the device type?
+	device_type = dev_flags[6];
+	free(dev_flags);
+	fprintf (stdout, "device type: %i\n", device_type);
 	//TODO Once a BlueSCSI drive is found, send a MODE SENSE 0x1A command for page 0x31. Validate it against the BlueSCSIVendorPage (see: mode.c)
 	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
-		return 0;
+		return device_type; //TODO FIX FIX FIX HDD 
 	else
 	{
 		fprintf (stderr, "Error: didn't find ID %s in product_rev\n", BlueSCSI_ID);
-		return 2;
+		return TYPE_NONE;
 	}
 }
 
@@ -479,47 +500,34 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 {
 	int dev;
 	int dev_path_num; //SCSI ID pulled from path
-	int type[8];
+	unsigned char type[8];
 	int i;
 	char *inq = NULL;
 	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
 	readonly = 0;
-	if (list == MODE_CD) //TODO Probably need to detect more modes here
+	int device_type;
+	
+	//Open the device read only if we are attempting a CD operation
+	if (list == MODE_CD || cd_img != NOT_ACTIVE) //TODO Probably need to detect more modes here
 	       readonly = 1;
 
 	dev = scsi_open(path, readonly);
 	if (dev < 0) {
-		fprintf(stderr, "ERROR: Cannot open device: %s\n Try running again as root\n", strerror(errno));
+		fprintf(stderr, "ERROR: Cannot open device: %s\nTry running again as root\n", strerror(errno));
 		exit(1);
 	}
 	if (verbose)	
 		printf("Opened dev %i %s:\n", dev, path);
-
+	
 	//Do inquiry to check we are working with a BlueSCSI
-	if (bluescsi_inquiry (dev, PRINT_OFF) != 0)
+	device_type = bluescsi_inquiry (dev, PRINT_OFF);
+	if (device_type == TYPE_NONE)
 	{
 		fprintf (stderr, "Didn't find a BlueSCSI device at %s\n", path);
 		scsi_close (dev);
 		exit(1);
 	}
 	
-	//Next double check what kind of device we are emulating
-	if (bluescsi_listdevices(dev, &inq) == 0) {
-		if (verbose)
-			fprintf (stdout, "List device flags: ");
-		for (i = 0; i < 8;i++)
-		{
-			type[i] = inq[i];
-			if (verbose)
-				fprintf (stdout, "%02x ", inq[i]);
-		}
-		if (verbose)
-			fprintf (stdout, "\n");
-		free(inq);
-	}
-	else
-		goto close_dev;
-
 	if ((dev_path_num = path_to_devnum(path)) < 0)
 		goto close_dev;
 
@@ -536,12 +544,12 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		bluescsi_listfiles(dev, PRINT_ON);
 	else if (list == MODE_PUT)
 		bluescsi_sendfile (dev, outdir);
-	else if (file != -1)
+	else if (file != NOT_ACTIVE)
 		bluescsi_getfile (dev, file, outdir);
-	else if (cd_img != -1)
+	else if (cd_img != NOT_ACTIVE)
 	{
-		if (type[dev_path_num] != TYPE_CD)
-			fprintf (stderr, "Device doesn't seem to be a CD drive?\n");
+		if (device_type != TYPE_CD)
+			fprintf (stderr, "Device doesn't seem to be a CD drive? Detected %i, %i\n", type[dev_path_num], dev_path_num);
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}
@@ -568,36 +576,9 @@ static void usage(void)
 	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
 }
 
-static int mediad_start(void) {
-    int status;
-
-    // Starting mediad service
-    if (verbose)
-    	fprintf (stdout, "Starting mediad...\n");
-    status = system("/etc/init.d/mediad start");
-    if (status != 0) {
-        fprintf(stderr, "Failed to start mediad service: %s\n", strerror(errno));
-        return 1;
-    }
-    return 0;
-}
-static int mediad_stop(void) {
-    int status;
-
-    // Stop mediad service
-    if (verbose)
-    	fprintf (stdout, "Stopping mediad...\n");
-    status = system("/etc/init.d/mediad stop");
-    if (status != 0) {
-        fprintf(stderr, "Failed to stop mediad service: %s\n", strerror(errno));
-        return 1;
-    }
-    return 0;
-}
-
 int main(int argc, char *argv[])
 {
-	int c, cdimg = -1, list = 0, file = -1;
+	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
 	char outdir[1024];
 
 	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:")) != -1) switch (c) {
@@ -638,9 +619,9 @@ int main(int argc, char *argv[])
 	
 	argc -= optind;
 	argv += optind;
-	
+	//Stop any removable media managers running on the host system before changing CDs
 	if (cdimg != -1)
-		mediad_stop (); //Stop the mediad before changing image
+		mediad_stop ();
 
 	if (argc < 1) {
 		fprintf (stderr, "Please specify device (\"/dev/scsi/...\"\n");
@@ -649,7 +630,9 @@ int main(int argc, char *argv[])
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
+
 	do_drive(argv[0], list, verbose, cdimg, file, outdir);
+	
 	if (cdimg != -1)
 		mediad_start ();
 	

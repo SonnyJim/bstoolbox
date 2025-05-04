@@ -27,6 +27,7 @@
 #define MAX_DATA_LEN 4096 //TODO Document
 #define SEND_BUF_SIZE 512
 #define NAME_BUF_SIZE 33
+#define NOT_ACTIVE -1
 
 enum {
 	TYPE_NONE = 255,

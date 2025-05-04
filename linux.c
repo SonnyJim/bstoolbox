@@ -7,6 +7,16 @@
 #include "os.h"
 
 extern int verbose;
+int mediad_start(void) {
+	fprintf(stderr, "mediad_start(): Not implemented on Linux\n");
+    	return 1;
+}
+
+int mediad_stop(void) {
+	fprintf(stderr, "mediad_stop(): Not implemented on Linux\n");
+    	return 1;
+}
+
 
 int scsi_open(char *path, int readonly)
 {
@@ -126,7 +136,20 @@ int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *
 	return 0;
 }
 
-int path_to_devnum(const char *path)
-{
-	return 0;
-};
+// Extract the numeric part of /dev/sgN or /dev/srN
+int path_to_devnum(const char *path) {
+    int dev_path_num;
+
+    // Match /dev/sg0, /dev/sg1, etc.
+    if (sscanf(path, "/dev/sg%d", &dev_path_num) == 1) {
+        return dev_path_num;
+    }
+
+    // Match /dev/sr0, /dev/sr1 (SCSI CD-ROMs)
+    if (sscanf(path, "/dev/sr%d", &dev_path_num) == 1) {
+        return dev_path_num;
+    }
+
+    fprintf(stderr, "ERROR: Invalid or unsupported Linux device path format: %s\n", path);
+    return -1;
+}

@@ -719,13 +719,13 @@ int main(int argc, char *argv[])
 		mediad_stop ();
 
 	if (argc < 1) {
-		fprintf (stderr, "Please specify device (\"/dev/scsi/...\"\n");
+		fprintf (stderr, "No device path entered\n");
 		usage();
-		return 0;
+		return 1;
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
-
+	strcpy (device_path, argv[0]); //Copy the path for later
 	do_drive(argv[0], list, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)

@@ -363,7 +363,7 @@ static int bluescsi_listfiles(int dev, int print)
 		fprintf (stdout, "Listing files on %i\n", dev);
 
 	num_files = bluescsi_countfiles (dev);
-	if (num_files == 0 || num_files > MAX_FILES)
+	if (num_files < 0 || num_files > MAX_FILES)
 	{
 		fprintf (stderr, "Error: listfiles num_files invalid: %i", num_files);
 		return -1;

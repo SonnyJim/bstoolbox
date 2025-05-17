@@ -292,6 +292,12 @@ static int bluescsi_listcds(int dev)
 	buf_size = sizeof(ToolboxFileEntry) * num_cds;
 	
 	buf = (char *)malloc(buf_size);
+	if (buf == NULL)
+	{
+		fprintf (stderr, "Error: failed to malloc %i bytes: - %s\n", buf_size, strerror(errno));
+		return -1;
+	}
+
 	memset(buf, 0, buf_size);
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
@@ -554,7 +560,14 @@ static int bluescsi_inquiry(int dev, int print)
 
 	if (total_len <= sizeof(buf)) {
 		toolbox_api_version = buf[total_len - 1];
-		fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
+		if (verbose)
+			fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
+
+		if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER) {
+			fprintf(stdout, "Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
+			//return -1;
+		}
+
 	} else {
 		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
 	}

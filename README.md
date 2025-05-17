@@ -1,5 +1,11 @@
-# BlueSCSI toolbox for SGI IRIX
-Download files and run 'make', it should spit out a bstoolbox binary.
+# BlueSCSI toolbox for SGI IRIX and Linux
+Download files and run 'make', it should spit out a bstoolbox binary.  Currently tested on the following platforms:
+
+Linux Mint
+
+NixOS
+
+IRIX 6.5 (writing to shared directory from host currently broken)
 
 **Treat this software as ALPHA, back up any important data before using it!**
 

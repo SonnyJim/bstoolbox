@@ -376,11 +376,16 @@ static int bluescsi_listfiles(int dev, int print)
 	files_count = num_files;
 	if (verbose)
 		fprintf (stdout, "Found %i files\n", num_files);
-	buf_size = sizeof(ToolboxFileEntry);
-	buf_size = buf_size * num_files;
+	buf_size = sizeof(ToolboxFileEntry) * num_files;
 	
 	buf = (char *)malloc(buf_size);
-	memset(buf, 0, sizeof(buf));
+	if (buf == NULL)
+	{
+		fprintf (stderr, "Error: failed to malloc %i bytes: - %s\n", buf_size, strerror(errno));
+		return -1;
+	}
+
+	memset(buf, 0, buf_size);
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listfiles failed - %s\n", strerror(errno));

@@ -252,7 +252,7 @@ static int bluescsi_setnextcd(int dev, int num)
 	max_cds = bluescsi_countcds(dev);
 	cmd[0] = BLUESCSI_TOOLBOX_SET_NEXT_CD;
 
-	if (num < 0 | num > max_cds)
+	if (num < 0 || num > max_cds)
 	{
 		fprintf (stderr, "setnextcd: %i is out of range of max %i\n", num, max_cds);
 		return 1;

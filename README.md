@@ -3,7 +3,7 @@ Download files and run 'make', it should spit out a bstoolbox binary.  Currently
 
 Linux Mint
 NixOS
-IRIX 6.5 (writing to shared directory from host currently broken
+IRIX 6.5 (writing to shared directory from host currently broken)
 
 **Treat this software as ALPHA, back up any important data before using it!**
 

@@ -289,11 +289,16 @@ static int bluescsi_listcds(int dev)
 		return -1;
 	}
 	fprintf (stdout, "Found %i CDs\n", num_cds);
-	buf_size = sizeof(ToolboxFileEntry);
-	buf_size = buf_size * num_cds;
+	buf_size = sizeof(ToolboxFileEntry) * num_cds;
 	
 	buf = (char *)malloc(buf_size);
-	memset(buf, 0, sizeof(buf));
+	if (buf == NULL)
+	{
+		fprintf (stderr, "Error: failed to malloc %i bytes: - %s\n", buf_size, strerror(errno));
+		return -1;
+	}
+
+	memset(buf, 0, buf_size);
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listcds failed - %s\n", strerror(errno));
@@ -371,11 +376,16 @@ static int bluescsi_listfiles(int dev, int print)
 	files_count = num_files;
 	if (verbose)
 		fprintf (stdout, "Found %i files\n", num_files);
-	buf_size = sizeof(ToolboxFileEntry);
-	buf_size = buf_size * num_files;
+	buf_size = sizeof(ToolboxFileEntry) * num_files;
 	
 	buf = (char *)malloc(buf_size);
-	memset(buf, 0, sizeof(buf));
+	if (buf == NULL)
+	{
+		fprintf (stderr, "Error: failed to malloc %i bytes: - %s\n", buf_size, strerror(errno));
+		return -1;
+	}
+
+	memset(buf, 0, buf_size);
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listfiles failed - %s\n", strerror(errno));
@@ -430,6 +440,12 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	if (verbose)
 		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
 	filename = malloc (strlen(outdir) + strlen(files[idx].name));
+	if (filename == NULL)
+	{
+		fprintf (stderr, "Error mallocing filename\n");
+		return -1;
+	}
+
 	fprintf (stdout, "Fetching %s\n", files[idx].name);
 	strcpy (filename, outdir);
 	strcat (filename, files[idx].name);
@@ -509,8 +525,10 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	*outbuf = (char *)calloc(sizeof(buf), sizeof(char));
 	if (*outbuf) {
 		memcpy(*outbuf, buf, sizeof(buf));
+		return 0;
 	}
-	return 0;
+	else
+		return -1;
 }
 
 //Interrogate the device and find out it's capabilties
@@ -522,6 +540,9 @@ static int bluescsi_inquiry(int dev, int print)
 	scsi_inquiry inq;
 	int i;
 	char* dev_flags;
+	int additional_len;
+	int total_len;
+	int toolbox_api_version;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
@@ -546,7 +567,24 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
 		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
 	}
-	
+	// Print the Toolbox API version if the extended data is present
+	additional_len = buf[4]; //offset 4 contains how much extra data is in the packet
+	total_len = additional_len + 5;
+
+	if (total_len <= sizeof(buf)) {
+		toolbox_api_version = buf[total_len - 1];
+		if (verbose)
+			fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
+
+		if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER) {
+			fprintf(stdout, "Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
+			//return -1;
+		}
+
+	} else {
+		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
+	}
+
 	//Get the 8 byte device flags to see what type it is
 	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
 		if (verbose)
@@ -719,13 +757,13 @@ int main(int argc, char *argv[])
 		mediad_stop ();
 
 	if (argc < 1) {
-		fprintf (stderr, "Please specify device (\"/dev/scsi/...\"\n");
+		fprintf (stderr, "No device path entered\n");
 		usage();
-		return 0;
+		return 1;
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
-
+	//strcpy (device_path, argv[0]); //Copy the path for later
 	do_drive(argv[0], list, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)

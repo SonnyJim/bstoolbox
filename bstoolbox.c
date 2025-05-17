@@ -440,6 +440,12 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	if (verbose)
 		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
 	filename = malloc (strlen(outdir) + strlen(files[idx].name));
+	if (filename == NULL)
+	{
+		fprintf (stderr, "Error mallocing filename\n");
+		return -1;
+	}
+
 	fprintf (stdout, "Fetching %s\n", files[idx].name);
 	strcpy (filename, outdir);
 	strcat (filename, files[idx].name);
@@ -519,8 +525,10 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	*outbuf = (char *)calloc(sizeof(buf), sizeof(char));
 	if (*outbuf) {
 		memcpy(*outbuf, buf, sizeof(buf));
+		return 0;
 	}
-	return 0;
+	else
+		return -1;
 }
 
 //Interrogate the device and find out it's capabilties

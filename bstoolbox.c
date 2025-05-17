@@ -524,6 +524,7 @@ static int bluescsi_inquiry(int dev, int print)
 	char* dev_flags;
 	int additional_len;
 	int total_len;
+	int toolbox_api_version;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
@@ -553,7 +554,7 @@ static int bluescsi_inquiry(int dev, int print)
 	total_len = additional_len + 5;
 
 	if (total_len <= sizeof(buf)) {
-		uint8_t toolbox_api_version = buf[total_len - 1];
+		toolbox_api_version = buf[total_len - 1];
 		fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
 	} else {
 		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");

@@ -289,11 +289,10 @@ static int bluescsi_listcds(int dev)
 		return -1;
 	}
 	fprintf (stdout, "Found %i CDs\n", num_cds);
-	buf_size = sizeof(ToolboxFileEntry);
-	buf_size = buf_size * num_cds;
+	buf_size = sizeof(ToolboxFileEntry) * num_cds;
 	
 	buf = (char *)malloc(buf_size);
-	memset(buf, 0, sizeof(buf));
+	memset(buf, 0, buf_size);
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listcds failed - %s\n", strerror(errno));

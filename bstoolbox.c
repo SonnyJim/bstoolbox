@@ -522,8 +522,8 @@ static int bluescsi_inquiry(int dev, int print)
 	scsi_inquiry inq;
 	int i;
 	char* dev_flags;
-	uint8_t additional_len;
-	uint8_t total_len;
+	int additional_len;
+	int total_len;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)

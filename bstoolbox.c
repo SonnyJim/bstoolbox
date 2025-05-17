@@ -522,6 +522,8 @@ static int bluescsi_inquiry(int dev, int print)
 	scsi_inquiry inq;
 	int i;
 	char* dev_flags;
+	uint8_t additional_len;
+	uint8_t total_len;
 
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
@@ -546,7 +548,17 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
 		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
 	}
-	
+	// Print the Toolbox API version if the extended data is present
+	additional_len = buf[4]; //offset 4 contains how much extra data is in the packet
+	total_len = additional_len + 5;
+
+	if (total_len <= sizeof(buf)) {
+		uint8_t toolbox_api_version = buf[total_len - 1];
+		fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
+	} else {
+		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
+	}
+
 	//Get the 8 byte device flags to see what type it is
 	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
 		if (verbose)
@@ -725,7 +737,7 @@ int main(int argc, char *argv[])
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
-	strcpy (device_path, argv[0]); //Copy the path for later
+	//strcpy (device_path, argv[0]); //Copy the path for later
 	do_drive(argv[0], list, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)

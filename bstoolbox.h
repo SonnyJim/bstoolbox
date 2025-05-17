@@ -87,4 +87,4 @@ typedef struct {
 
 ToolboxFileEntry files[MAX_FILES];
 int files_count;
-char device_path[256];
+//char device_path[256];

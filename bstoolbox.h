@@ -1,3 +1,6 @@
+#ifndef BSTOOLBOX_H
+#define BSTOOLBOX_H
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,10 +12,10 @@
 
 #include "os.h"
 
-#define SCSI_INQUIRY    0x12
-#define BLUESCSI_TOOLBOX_COUNT_FILES    0xD2
+#define SCSI_INQUIRY                    0x12
 #define BLUESCSI_TOOLBOX_MODE_FILES     0xD0
 #define BLUESCSI_TOOLBOX_GET_FILE       0xD1
+#define BLUESCSI_TOOLBOX_COUNT_FILES    0xD2
 #define BLUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3
 #define BLUESCSI_TOOLBOX_SEND_FILE_10   0xD4
 #define BLUESCSI_TOOLBOX_SEND_FILE_END  0xD5
@@ -21,18 +24,23 @@
 #define BLUESCSI_TOOLBOX_SET_NEXT_CD    0xD8
 #define BLUESCSI_TOOLBOX_MODE_DEVICES   0xD9
 #define BLUESCSI_TOOLBOX_COUNT_CDS      0xDA
-#define OPEN_RETRO_SCSI_TOO_MANY_FILES 0x0001
-
 
 #define BLUESCSI_TOOLBOX_API_VER 1
 
 #define MAX_FILES 100
-#define MAX_DATA_LEN 4096 //TODO Document
-#define SEND_BUF_SIZE 512
 #define NAME_BUF_SIZE 33
 #define NOT_ACTIVE -1
-#define SCSI_CMD_LENGTH 10 //Almost all of the SCSI commands we send are 10 big
-//Copied from scsi2sd.h
+#define SCSI_CMD_LENGTH 10
+
+/* New File Transfer Transfer Constants */
+#define GET_BLOCK_SIZE         4096
+#define GET_BLOCKS_PER_XFER    16    /* Request 16 x 4KB = 64KB per GET command */
+#define GET_BUF_SIZE           (GET_BLOCK_SIZE * GET_BLOCKS_PER_XFER)
+
+#define SEND_BLOCK_SIZE        512
+#define SEND_BLOCKS_PER_XFER   127   /* Request 127 x 512B = 65,024B (~63.5KB) per SEND command */
+#define SEND_BUF_SIZE          (SEND_BLOCK_SIZE * SEND_BLOCKS_PER_XFER)
+
 typedef enum
 {
 	TYPE_NONE = 0xFF,
@@ -44,7 +52,7 @@ typedef enum
 	TYPE_SEQUENTIAL = 0x05
 } dev_type;
 
-int device_list[8];
+extern int device_list[8];
 
 enum {
 	MODE_NONE, 
@@ -60,34 +68,32 @@ enum {
 	PRINT_ON
 };
 
-
-
 enum {
 	DEBUG_SET,
 	DEBUG_GET
 };
 
-int verbose;
+extern int verbose;
 
 typedef struct {
-	unsigned char dev_type; // Peripheral device type (bits 4-7), Peripheral qualifier (bits 0-3)
-	unsigned char dev_type_mod;    //RMB (bit 7), Device-type modifier (bits 0-6)
-	unsigned char version; //SCSI version ID
-	unsigned char add_length; //Additional length in bytes
+	unsigned char dev_type;
+	unsigned char dev_type_mod;
+	unsigned char version;
+	unsigned char add_length;
 	char reserved[3]; 
 	char vendor_id[9];
 	char product_id[17];
 	char product_rev[33];
-	
 } scsi_inquiry;
 
 typedef struct {
-    unsigned char index;   /* byte 00: file index in directory */
-    unsigned char type;    /* byte 01: type 0 = file, 1 = directory */
-    char name[NAME_BUF_SIZE];         /* byte 02-34: filename (32 byte max) + space for NUL terminator */
-    unsigned char size[5]; /* byte 35-39: file size (40 bit big endian unsigned) */
+    unsigned char index;
+    unsigned char type;
+    char name[NAME_BUF_SIZE];
+    unsigned char size[5];
 } ToolboxFileEntry;
 
-ToolboxFileEntry files[MAX_FILES];
-int files_count;
-//char device_path[256];
+extern ToolboxFileEntry files[MAX_FILES];
+extern int files_count;
+
+#endif

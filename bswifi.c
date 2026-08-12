@@ -36,39 +36,26 @@
 
 #define SCSI_WIFI_DATA_SIZE                   2048
 
+#define WIFI_NETWORK_FLAG_AUTH		(1 << 0)
+#define WIFI_NETWORK_FLAG_HIDDEN	(1 << 7)
+#define WIFI_NETWORK_ENTRY_SIZE               sizeof(struct wifi_network_entry)
+#define WIFI_JOIN_REQUEST_SIZE                sizeof(struct wifi_join_request)
 
-#define WIFI_NETWORK_FLAG_AUTH                0x01
+struct wifi_network_entry {
+	char ssid[64];
+	unsigned char bssid[6];
+	int8_t rssi;
+	uint8_t channel;
+	uint8_t flags;
+	uint8_t _padding;
+};
 
-
-/*
- * struct wifi_network_entry
- *
- * char    ssid[64];
- * char    bssid[6];
- * int8_t  rssi;
- * uint8_t channel;
- * uint8_t flags;
- * uint8_t _padding;
- *
- * 64 + 6 + 1 + 1 + 1 + 1 = 74 bytes
- */
-
-#define WIFI_NETWORK_ENTRY_SIZE               74
-
-
-/*
- * struct wifi_join_request
- *
- * char    ssid[64];
- * char    key[64];
- * uint8_t channel;
- * uint8_t _padding;
- *
- * 64 + 64 + 1 + 1 = 130 bytes
- */
-
-#define WIFI_JOIN_REQUEST_SIZE                130
-
+struct wifi_join_request {
+	char    ssid[64];
+	char    key[64];
+	uint8_t channel;
+	uint8_t _padding;
+};
 
 extern int scsi_open(char *path, int readonly);
 extern int scsi_close(int dev);
@@ -87,7 +74,6 @@ extern int scsi_send_commandw(int dev,
 
 
 int verbose = 0;
-
 
 /*
  * Build a 6-byte BlueSCSI Wi-Fi CDB.
@@ -353,7 +339,7 @@ dump_hex(const unsigned char *buf,
 static int
 wifi_info(int dev)
 {
-    unsigned char buf[WIFI_NETWORK_ENTRY_SIZE + 2];
+    unsigned char buf[sizeof(struct wifi_network_entry) + 2];
 
     unsigned int size;
 

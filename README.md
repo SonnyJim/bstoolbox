@@ -53,6 +53,7 @@ Options:
   -v                    Verbose/debug output
   -h                    Show this help
 
+Example: bswifi dp0 info
 
 Please make sure you run the program as root.
 ```

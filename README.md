@@ -7,7 +7,6 @@ NixOS
 
 IRIX 6.5
 
-**Treat this software as ALPHA, back up any important data before using it!**
 
 ## bstoolbox Usage
 ```
@@ -40,10 +39,10 @@ Usage:
   bswifi [-v] <device> info
   bswifi [-v] <device> join <ssid> <key> [channel]
 
+Example: sudo bswifi dp0 join MYNETWORK MYPASSWORD
+
 Commands:
   scan                  Start Wi-Fi scan
-  complete              Check scan completion
-  results               Get scan results
   info                  Get current Wi-Fi information
   join SSID KEY [CHAN]  Join an access point
 

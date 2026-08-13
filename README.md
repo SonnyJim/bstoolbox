@@ -1,7 +1,7 @@
 # BlueSCSI toolbox for SGI IRIX and Linux
 Download files and run 'make', it should spit out a bstoolbox and bswifi binary.  Currently tested on the following platforms:
 
-Linux Mint
+Linux Mint 22  ([Daynaport Linux driver available here](https://github.com/jflitton/daynaport-scsilink-linux-driver))
 
 NixOS
 
@@ -37,8 +37,6 @@ Please make sure you run the program as root.
 ```
 Usage:
   bswifi [-v] <device> scan
-  bswifi [-v] <device> complete
-  bswifi [-v] <device> results
   bswifi [-v] <device> info
   bswifi [-v] <device> join <ssid> <key> [channel]
 

@@ -9,6 +9,7 @@
 #include <scsi/sg.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #include "os.h"
 
@@ -157,4 +158,56 @@ int path_to_devnum(const char *path) {
     if (verbose)
 	    fprintf(stderr, "Found something at SCSI ID%i\n", scsi_id.scsi_id);
     return scsi_id.scsi_id;
+}
+
+/*
+ * Resolves a Linux network interface name to its SCSI generic node (/dev/sgX).
+ * Returns 0 on success, -1 if the exact interface or SCSI node does not exist.
+ */
+int get_scsi_path_for_iface(const char *ifname, char *out_path, size_t path_len) {
+    char sys_path[256];
+    DIR *dir;
+    struct dirent *entry;
+    int found = 0;
+
+    if (!ifname || !*ifname) return -1;
+
+    /* 1. Try opening the SCSI generic sysfs directory for this exact interface name */
+    snprintf(sys_path, sizeof(sys_path), "/sys/class/net/%s/device/scsi_generic", ifname);
+
+    dir = opendir(sys_path);
+    if (!dir) {
+        /* Fallback: Check /sys/class/net/<ifname>/device directly */
+        snprintf(sys_path, sizeof(sys_path), "/sys/class/net/%s/device", ifname);
+        dir = opendir(sys_path);
+        if (!dir) {
+            return -1; /* Interface or SCSI device does not exist in Linux sysfs */
+        }
+    }
+
+    /* 2. Find the associated "sgX" node name */
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, "sg", 2) == 0) {
+            snprintf(out_path, path_len, "/dev/%s", entry->d_name);
+            found = 1;
+            break;
+        }
+    }
+
+    closedir(dir);
+    return found ? 0 : -1;
+}
+
+int main(void)
+{
+	char devpath[64];
+	int scsi_id = get_scsi_id_from_hwgraph("dp0", devpath, sizeof(devpath));
+
+	if (scsi_id >= 0) {
+		printf("Interface dp0 mapped to SCSI ID %d (%s)\n", scsi_id, devpath);
+	} else {
+		printf("Failed to resolve SCSI device from /hw/net/dp0\n");
+	}
+
+	return 0;
 }

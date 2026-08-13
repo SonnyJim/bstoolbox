@@ -32,9 +32,7 @@
 
 
 #define SCSI_CDB_LENGTH                       6
-
-
-#define SCSI_WIFI_DATA_SIZE                   2048
+#define WIFI_NETWORK_ENTRY_COUNT		10
 
 #define WIFI_NETWORK_FLAG_AUTH		(1 << 0)
 #define WIFI_NETWORK_FLAG_HIDDEN	(1 << 7)
@@ -88,8 +86,8 @@ wifi_make_cdb(unsigned char *cdb,
     cdb[0] = BLUESCSI_NETWORK_WIFI_CMD;
     cdb[1] = subcommand;
 
-    cdb[3] = (unsigned char)((length >> 8) & 0xff);
-    cdb[4] = (unsigned char)(length & 0xff);
+    cdb[3] = (unsigned char)((length >> 8) & 0xff); //TODO Check this is needed
+    cdb[4] = (unsigned char)(length & 0xff); //Size of the returned data
 }
 
 
@@ -340,11 +338,9 @@ static int
 wifi_info(int dev)
 {
     unsigned char buf[sizeof(struct wifi_network_entry) + 2];
-
     unsigned int size;
 
-    memset(buf, 0, sizeof(buf));
-
+   memset(buf, 0, sizeof(buf));
     if (wifi_read_command(dev,
                           BLUESCSI_NETWORK_WIFI_CMD_INFO,
                           buf,
@@ -406,17 +402,11 @@ wifi_info(int dev)
 /*
  * Get scan results.
  *
- * The Macintosh implementation requests 2048 bytes.
- *
- * Response:
- *
- *   bytes 0-1   = big-endian data size
- *   bytes 2...  = wifi_network_entry structures
  */
 static int
 wifi_results(int dev)
 {
-    unsigned char buf[SCSI_WIFI_DATA_SIZE];
+    unsigned char buf[(WIFI_NETWORK_ENTRY_SIZE * WIFI_NETWORK_ENTRY_COUNT) + 2]; //the first 2 bytes in the return data tell us the size
 
     unsigned int size;
     unsigned int count;
@@ -460,8 +450,8 @@ wifi_results(int dev)
      */
     count = size / WIFI_NETWORK_ENTRY_SIZE;
 
-    if (count > 10)
-        count = 10;
+    if (count > WIFI_NETWORK_ENTRY_COUNT)
+        count = WIFI_NETWORK_ENTRY_COUNT;
 
     printf("\nWi-Fi networks: %u\n\n",
            count);
@@ -624,7 +614,7 @@ main(int argc,
     int dev;
     int ret;
 
-    const char *device;
+    char device[255];
     const char *command;
 
 
@@ -662,8 +652,17 @@ main(int argc,
         return 1;
     }
 
-
-    device = argv[0];
+    if (get_scsi_path_for_iface(argv[0], device, sizeof(device)) == 0) 
+    {
+	    if (verbose)
+	    	fprintf(stdout, "%s maps to: %s\n", argv[0], device);
+    } 
+    else 
+    {
+	    fprintf(stderr, "Could not find SCSI device for %s\n", argv[0]);
+	    return -1;
+    } 
+ 
     command = argv[1];
 
 

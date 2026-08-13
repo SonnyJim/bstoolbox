@@ -3,9 +3,16 @@
 #include <fcntl.h>
 #include <sys/dsreq.h>
 #include <invent.h>
+#include <sys/invent.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "os.h"
+
+#ifndef INV_PERIPH
+#define INV_PERIPH 9
+#endif
 
 extern int verbose;
 
@@ -219,4 +226,37 @@ int path_to_devnum(const char *path) {
     }
 
     return dev_path_num;
+}
+
+/* Helper to get scsi path from network name, eg 'dp0' -> '/dev/scsi/sc0dd010 */
+int get_scsi_path_for_iface(const char *ifname, char *out_path, size_t path_len) {
+    inventory_t *inv;
+    int dp_count = 0;
+    char inv_name[32];
+
+    if (!ifname || !*ifname) return -1;
+
+    setinvent();
+
+    while ((inv = getinvent()) != NULL) {
+        /* Filter for DaynaPORT SCSI Peripheral entries (Class 9) */
+        if (inv->inv_class == INV_PERIPH) {
+
+            /* Build the string name for this inventory item */
+            snprintf(inv_name, sizeof(inv_name), "dp%d", dp_count);
+
+            /* Compare user's exact string against the inventory item's string */
+            if (strcmp(ifname, inv_name) == 0) {
+                snprintf(out_path, path_len, "/dev/scsi/sc%dd%dl0",
+                         inv->inv_controller, inv->inv_unit);
+                endinvent();
+                return 0; /* Exact match in inventory */
+            }
+
+            dp_count++;
+        }
+    }
+
+    endinvent();
+    return -1; /* String does not exist in the inventory */
 }

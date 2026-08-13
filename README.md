@@ -39,7 +39,7 @@ Usage:
   bswifi [-v] <device> info
   bswifi [-v] <device> join <ssid> <key> [channel]
 
-Example: sudo bswifi dp0 join MYNETWORK MYPASSWORD
+Example: bswifi dp0 join MYNETWORK MYPASSWORD
 
 Commands:
   scan                  Start Wi-Fi scan
@@ -49,8 +49,6 @@ Commands:
 Options:
   -v                    Verbose/debug output
   -h                    Show this help
-
-Example: bswifi dp0 info
 
 Please make sure you run the program as root.
 ```

@@ -55,6 +55,19 @@ struct wifi_join_request {
 	uint8_t _padding;
 };
 
+/* SCSI INQUIRY Response Buffer Structure (Standard 36-byte response) */
+struct scsi_inquiry_response {
+    unsigned char peripheral_type; /* Device Type (0x03 = Processor) */
+    unsigned char rmb;             /* Removable Media Bit */
+    unsigned char version;         /* SCSI Version */
+    unsigned char response_format;
+    unsigned char additional_len;  /* Additional Length */
+    unsigned char reserved[3];
+    char          vendor_id[8];    /* Offset 8:  "Dayna   " */
+    char          product_id[16];  /* Offset 16: "SCSI/Link       " */
+    char          revision[4];     /* Offset 32: Firmware Revision */
+};
+
 extern int scsi_open(char *path, int readonly);
 extern int scsi_close(int dev);
 
@@ -356,15 +369,13 @@ wifi_info(int dev)
     size = ((unsigned int)buf[0] << 8) |
            (unsigned int)buf[1];
 
+    if (verbose)
+    {
+    	fprintf(stdout, "Raw INFO response (%d bytes):\n",(int)sizeof(buf));
+	dump_hex(buf, sizeof(buf));
+	fprintf(stdout, "\nINFO reported size: %u bytes\n", size);
 
-    printf("Raw INFO response (%d bytes):\n",
-           (int)sizeof(buf));
-
-    dump_hex(buf, sizeof(buf));
-
-    printf("\nINFO reported size: %u bytes\n",
-           size);
-
+    }
 
     if (size > WIFI_NETWORK_ENTRY_SIZE)
     {
@@ -388,7 +399,7 @@ wifi_info(int dev)
     }
 
 
-    printf("\nCurrent Wi-Fi network:\n");
+    fprintf(stdout, "\nCurrent Wi-Fi network:\n");
 
     /*
      * Skip the two-byte size.
@@ -571,7 +582,50 @@ wifi_join(int dev,
 
     return 0;
 }
+/*
+ * Interrogates an open SCSI device to verify it is a DaynaPort adapter with Wi-Fi support.
+ * Uses: scsi_send_command(int dev, unsigned char *cmd, int cmd_len, unsigned char *buf, int buf_len)
+ * Returns 1 if supported, 0 otherwise.
+ */
+static int 
+check_scsi_inquiry(int dev) {
+    struct scsi_inquiry_response inq;
+    
+    /* SCSI INQUIRY (0x12) CDB */
+    unsigned char cdb_inq[6] = { 0x12, 0x00, 0x00, 0x00, sizeof(inq), 0x00 };
+    
+    char vendor[9];
+    char product[17];
+    int ret;
 
+    memset(&inq, 0, sizeof(inq));
+
+    /* 1. Send SCSI INQUIRY */
+    ret = scsi_send_command(dev, cdb_inq, 6, (unsigned char *)&inq, sizeof(inq));
+    if (ret != 0) {
+        if (verbose) {
+            fprintf(stderr, "check_wifi_capabilities: INQUIRY command failed (ret=%d)\n", ret);
+        }
+        return 0;
+    }
+
+    /* 2. Format and null-terminate Vendor & Product strings */
+    memcpy(vendor, inq.vendor_id, 8);
+    vendor[8] = '\0';
+    memcpy(product, inq.product_id, 16);
+    product[16] = '\0';
+
+    if (verbose) {
+        fprintf(stdout, "SCSI INQUIRY Vendor: \"%s\", Product: \"%s\"\n", vendor, product);
+    }
+
+    /* 3. Check for Vendor "Dayna" and Product "SCSI/Link" */
+    if (memcmp(vendor, "Dayna", 5) != 0 || memcmp(product, "SCSI/Link", 9) != 0) {
+            fprintf(stderr, "Device is not a DaynaPort SCSI/Link adapter: %s %s\n", vendor, product);
+            return 0;
+        }
+    return 1;
+}
 
 /*
  * Usage.
@@ -660,14 +714,19 @@ main(int argc,
     else 
     {
 	    fprintf(stderr, "Could not find SCSI device for %s\n", argv[0]);
-	    return -1;
+	    return 1;
     } 
  
     command = argv[1];
 
 
     dev = scsi_open((char *)device, 0);
-
+    
+    if (!check_scsi_inquiry(dev))
+    {
+	    fprintf (stderr, "Couldn't find wifi capabilities on %s\n", device);
+	    return 1;
+    }
 
     if (dev < 0)
     {

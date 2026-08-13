@@ -1,13 +1,12 @@
 # BlueSCSI toolbox for SGI IRIX and Linux
 Download files and run 'make', it should spit out a bstoolbox and bswifi binary.  Currently tested on the following platforms:
 
-Linux Mint
+Linux Mint 22  ([Daynaport Linux driver available here](https://github.com/jflitton/daynaport-scsilink-linux-driver))
 
 NixOS
 
 IRIX 6.5
 
-**Treat this software as ALPHA, back up any important data before using it!**
 
 ## bstoolbox Usage
 ```
@@ -37,23 +36,19 @@ Please make sure you run the program as root.
 ```
 Usage:
   bswifi [-v] <device> scan
-  bswifi [-v] <device> complete
-  bswifi [-v] <device> results
   bswifi [-v] <device> info
   bswifi [-v] <device> join <ssid> <key> [channel]
 
+Example: bswifi dp0 join MYNETWORK MYPASSWORD
+
 Commands:
   scan                  Start Wi-Fi scan
-  complete              Check scan completion
-  results               Get scan results
   info                  Get current Wi-Fi information
   join SSID KEY [CHAN]  Join an access point
 
 Options:
   -v                    Verbose/debug output
   -h                    Show this help
-
-Example: bswifi dp0 info
 
 Please make sure you run the program as root.
 ```

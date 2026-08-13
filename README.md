@@ -1,15 +1,15 @@
 # BlueSCSI toolbox for SGI IRIX and Linux
-Download files and run 'make', it should spit out a bstoolbox binary.  Currently tested on the following platforms:
+Download files and run 'make', it should spit out a bstoolbox and bswifi binary.  Currently tested on the following platforms:
 
 Linux Mint
 
 NixOS
 
-IRIX 6.5 (writing to shared directory from host currently broken)
+IRIX 6.5
 
 **Treat this software as ALPHA, back up any important data before using it!**
 
-## Usage
+## bstoolbox Usage
 ```
 Please specify device ("/dev/scsi/..."
 
@@ -32,3 +32,29 @@ Options:
 
 Please make sure you run the program as root.
 ```
+
+## bswifi Usage
+```
+Usage:
+  bswifi [-v] <device> scan
+  bswifi [-v] <device> complete
+  bswifi [-v] <device> results
+  bswifi [-v] <device> info
+  bswifi [-v] <device> join <ssid> <key> [channel]
+
+Commands:
+  scan                  Start Wi-Fi scan
+  complete              Check scan completion
+  results               Get scan results
+  info                  Get current Wi-Fi information
+  join SSID KEY [CHAN]  Join an access point
+
+Options:
+  -v                    Verbose/debug output
+  -h                    Show this help
+
+Example: bswifi dp0 info
+
+Please make sure you run the program as root.
+```
+

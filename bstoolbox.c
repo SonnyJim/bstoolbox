@@ -3,47 +3,36 @@
  */
 #include "bstoolbox.h"
 
-/*
- * Sending Files
- * Sending files from the Host to the SD card is a three-step process:
- *
- * BLUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3 to prepare a file on the SD card for receiving.
- * BLUESCSI_TOOLBOX_SEND_FILE_10 0xD4 to send the actual data of the file.
- * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5 to close the file.
- */
+int device_list[8];
+int verbose = 0;
+ToolboxFileEntry files[MAX_FILES];
+int files_count = 0;
+
+/* Helper function to convert 40bit size into a long */
+static long int size_to_long(const unsigned char size[5])
+{
+    int i;
+    long int result = 0;
+    for (i = 0; i < 5; i++)
+    {
+        result = (result << 8) | size[i];
+    }
+    return result;
+}
 
 /*
- * LUESCSI_TOOLBOX_SEND_FILE_PREP 0xD3
- * Prepares a file on the SD card in the ToolBoxSharedDir (Default /shared) for receiving.
- *
- * The file name is 33 char name sent in the SCSI data, null terminated. The name should only contain valid characters for file names on FAT32/ExFAT.
- *
- * If the file is not able to be created a CHECK_CONDITION ILLEGAL_REQUEST is set as the sense.
- *
- * BLUESCSI_TOOLBOX_SEND_FILE_10 0xD4
- * Receive data from the host in blocks of 512 bytes.
- *
- * CDB[1..2] - Number of bytes sent in this request. Big endian. Minimum 1, maximum 512.
- *
- * CDB[3..5] - Block number in the file for these bytes. Big endian.
- *
- * If the file has a write error sense will be set as CHECK_CONDITION ILLEGAL_REQUEST. You may try to resend the block or fail and call BLUESCSI_TOOLBOX_SEND_FILE_END
- *
- * NOTE: The number of bytes sent should be 512 in all but the final block of the file.
- *
- * BLUESCSI_TOOLBOX_SEND_FILE_END 0xD5
- * Once the file is completely sent this command will close the file.
+ * Sending Files (Host -> BlueSCSI / shared)
  */
 static int bluescsi_sendfile(int dev, char *path)
 {
 	char cmd[10] = { BLUESCSI_TOOLBOX_SEND_FILE_PREP, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 	char filename[NAME_BUF_SIZE];
 	char *base_name;
-	char send_buf[SEND_BUF_SIZE];
+	char *send_buf;
 	long int bytes_read = 0;
 	long int actual_read = 0;
-	int chunk;
-	int buf_idx = 0;
+	long int blk_offset = 0; /* Offset in 512-byte blocks */
+	int num_blocks;
 	int ret;
 	FILE *fd;
 	long int filesize;
@@ -52,14 +41,12 @@ static int bluescsi_sendfile(int dev, char *path)
 	if (verbose)
 		fprintf(stdout, "sendfile: %s\n", path);
 
-	memset(send_buf, 0, sizeof(send_buf));
-	//TODO Copnsider using basename()
 	// Extract base filename
 	base_name = strrchr(path, '/');
 	if (base_name == NULL) {
 		base_name = path;
 	} else {
-		base_name++; // skip the slash
+		base_name++;
 	}
 
 	if (strlen(base_name) >= NAME_BUF_SIZE) {
@@ -87,46 +74,70 @@ static int bluescsi_sendfile(int dev, char *path)
 	}
 	filesize = st.st_size;
 
-	// Send filename
+	// 1. Send BLUESCSI_TOOLBOX_SEND_FILE_PREP (0xD3)
 	if (scsi_send_commandw(dev, (unsigned char *)cmd, SCSI_CMD_LENGTH, (unsigned char *)filename, 33) != 0) {
 		fprintf(stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
 		fclose(fd);
 		return 1;
 	}
 
-	// Prepare to send file data
-	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_10;
+	send_buf = (char *)malloc(SEND_BUF_SIZE);
+	if (send_buf == NULL) {
+		fprintf(stderr, "Error: sendfile couldn't allocate send buffer\n");
+		fclose(fd);
+		return 1;
+	}
 
+	// 2. Send Data Blocks via BLUESCSI_TOOLBOX_SEND_FILE_10 (0xD4)
 	while (bytes_read < filesize) {
-		chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
+		long int chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
 		memset(send_buf, 0, SEND_BUF_SIZE);
 
 		actual_read = fread(send_buf, 1, chunk, fd);
 		if (actual_read <= 0) {
 			fprintf(stderr, "Error: fread failed or returned 0 at offset %ld\n", bytes_read);
+			free(send_buf);
 			fclose(fd);
 			return 1;
 		}
 
-		cmd[1] = (actual_read & 0xFF00) >> 8;
-		cmd[2] = (actual_read & 0xFF);
+		memset(cmd, 0, sizeof(cmd));
+		cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_10;
 
-		cmd[3] = (buf_idx & 0xFF0000) >> 16;
-		cmd[4] = (buf_idx & 0xFF00) >> 8;
-		cmd[5] = (buf_idx & 0xFF);
+		/* CDB[3..5]: 24-bit big endian block offset (512-byte blocks) */
+		cmd[3] = (unsigned char)((blk_offset >> 16) & 0xFF);
+		cmd[4] = (unsigned char)((blk_offset >>  8) & 0xFF);
+		cmd[5] = (unsigned char)((blk_offset      ) & 0xFF);
+
+		if (actual_read % SEND_BLOCK_SIZE == 0) {
+			/* Block Mode: Transfer size = CDB[6] * 512 bytes */
+			num_blocks = actual_read / SEND_BLOCK_SIZE;
+			cmd[1] = 0;
+			cmd[2] = 0;
+			cmd[6] = (unsigned char)(num_blocks & 0xFF);
+		} else {
+			/* Legacy Mode: CDB[6] = 0, CDB[1..2] = raw byte count */
+			num_blocks = (actual_read + SEND_BLOCK_SIZE - 1) / SEND_BLOCK_SIZE;
+			cmd[1] = (unsigned char)((actual_read >> 8) & 0xFF);
+			cmd[2] = (unsigned char)(actual_read & 0xFF);
+			cmd[6] = 0;
+		}
 
 		ret = scsi_send_commandw(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)send_buf, actual_read);
 		if (ret != 0) {
-			fprintf(stderr, "Error: sendfile10 failed - %s\n", strerror(errno));
+			fprintf(stderr, "Error: sendfile10 failed at block %ld - %s\n", blk_offset, strerror(errno));
+			free(send_buf);
 			fclose(fd);
 			return 1;
 		}
 
 		bytes_read += actual_read;
-		buf_idx++;
+		blk_offset += num_blocks;
 	}
 
-	// Send file end command
+	free(send_buf);
+
+	// 3. Send BLUESCSI_TOOLBOX_SEND_FILE_END (0xD5)
 	memset(cmd, 0, sizeof(cmd));
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
 
@@ -140,24 +151,15 @@ static int bluescsi_sendfile(int dev, char *path)
 	return 0;
 }
 
-
 /*
- * BLUESCSI_TOOLBOX_TOGGLE_DEBUG 0xD6
- * Enable or disable Debug logs. Also allows you to get the current status.
- *
- * If CDB[1] is set to 0 it is the subcommand Set Debug. The value of CDB[2] is used as the boolean value for the debug flag.
- *
- * If CDB[1] is set to 1 it is the subcommand Get Debug. The boolean value is sent as a 1 byte value.
- *
- * NOTE: Debug logs significantly decrease performance while enabled. When your app enables debug you MUST notify them of the decreased performance.
+ * Debug control
  */
-
 static int bluescsi_getdebug (int dev)
 {
 	int ret;
 	char cmd[10] = {BLUESCSI_TOOLBOX_TOGGLE_DEBUG, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
 	char buf[1];
-	cmd[1] = DEBUG_GET;//Get debug flag
+	cmd[1] = DEBUG_GET;
 	memset(buf, 0, sizeof(buf));
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
@@ -189,13 +191,6 @@ static int bluescsi_setdebug (int dev, int value)
 	return 0;
 }
 
-/*
- * BLUESCSI_TOOLBOX_COUNT_FILES 0xD2
- * Counts the number of files in the ToolBoxSharedDir (default /shared). The purpose is to allow the host program to know how much data will be sent back by the List files function.
- *
- * This can be sent to any valid BlueSCSI target.
- */
-
 static int bluescsi_countfiles(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_COUNT_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
@@ -207,16 +202,10 @@ static int bluescsi_countfiles(int dev)
 		fprintf (stderr, "Error: countfiles failed - %s\n", strerror(errno));
 		return -1;
 	}
-	ret = buf[0]; //Maximum of 100 files 
+	ret = buf[0]; 
 	return ret;
 }
 
-/** TOOLBOX_COUNT_CDS (read, length 10)
- * Input:
- *  CDB 00 = command byte
- * Output:
- *  Single byte indicating number of CD images available. (Max 100.)
- */
 static int bluescsi_countcds(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_COUNT_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};	
@@ -228,7 +217,7 @@ static int bluescsi_countcds(int dev)
 		fprintf (stderr, "Error: countcds failed - %s\n", strerror(errno));
 		return -1;
 	}
-	ret = buf[0]; //Maximum of 100 files
+	ret = buf[0];
 	if (ret < 0 || ret > MAX_FILES)
 	{
 		fprintf (stderr,"Error: countcds invalid count %i\n", ret);
@@ -237,13 +226,6 @@ static int bluescsi_countcds(int dev)
 	return ret;
 }
 
-/** TOOLBOX_SET_NEXT_CD (read, length 10)
- * Input:
- *  CDB 00 = command byte
- *  CDB 01 = image file index byte to change to
- * Output:
- *  None.
- */
 static int bluescsi_setnextcd(int dev, int num)
 {
 	int max_cds;
@@ -268,12 +250,7 @@ static int bluescsi_setnextcd(int dev, int num)
 	}
 	return 0;
 }
-/*
- * BLUESCSI_TOOLBOX_LIST_CDS 0xD7
- * Lists all the files for the current directory for the selected SCSI ID target. Eg: When selecting SCSI ID 3 it will look for a CD3 folder and list files from there. The structure is ToolboxFileEntry.
- *
- * NOTE: Since there is no universal name for a CD image there is no filtering done on the lists of files.
- */
+
 static int bluescsi_listcds(int dev)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_CDS, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -285,7 +262,7 @@ static int bluescsi_listcds(int dev)
 	num_cds = bluescsi_countcds (dev);
 	if (num_cds < 0 || num_cds > MAX_FILES)
 	{
-		fprintf (stderr, "Error:  CD number requested invalid: %i\n", num_cds);
+		fprintf (stderr, "Error: CD number requested invalid: %i\n", num_cds);
 		return -1;
 	}
 	fprintf (stdout, "Found %i CDs\n", num_cds);
@@ -302,13 +279,13 @@ static int bluescsi_listcds(int dev)
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listcds failed - %s\n", strerror(errno));
+		free(buf);
 		return -1;
 	}
 	j = 0;
-	for (i=0;i<buf_size;i++)
+	for (i = 0; i < buf_size; i++)
 	{
-
-		if (j == 0 )
+		if (j == 0)
 			fprintf (stdout, "#%i ", (buf[i]));
 		if (j >= 2 && j <= 34)
 			fprintf (stdout, "%c", buf[i]);
@@ -318,44 +295,12 @@ static int bluescsi_listcds(int dev)
 			j = 0;
 			fprintf (stdout, "\n");
 		}
-	//	fprintf (stdout, "%02x",buf[i]);
 	}
 	fprintf (stdout, "\n");
+	free(buf);
 	return 1;
 }
 
-//Helper function to convert 40bit size into a long
-static long int size_to_long(const unsigned char size[5])
-{
-    int i;
-    long int result = 0;
-    for (i = 0; i < 5; i++)
-    {
-        result = (result << 8) | size[i];
-    }
-    return result;
-}
-
-/*
- * Receiving Files
- * The Host machine can read files directly off the SD card and write them to the Host.
- *
- * To receive files
- *
- * Count and list the files with BLUESCSI_TOOLBOX_COUNT_FILES 0xD2 and BLUESCSI_TOOLBOX_LIST_FILES 0xD0.
- * Use the file index and byte offset to transfer the desired file with BLUESCSI_TOOLBOX_GET_FILE 0xD1.
- *
- */
-
-
-/*
- * BLUESCSI_TOOLBOX_LIST_FILES 0xD0
- * Returns a list of files in the ToolBoxSharedDir (Default /shared) in a ToolboxFileEntry struct
- * NOTE: File names are truncated to 32 chars - but can still be transferred. 
- * NOTE: You may need to convert characters that are valid file names on FAT32/ExFat to support the hosts native character encoding and file name limitations. 
- * NOTE: Currently the response is limited to 100 entries, Will return 
- * NOTE: BlueSCSI only transfers as many entries as are actually present. You should request the file count first, then size your receive buffer to match that number of entries.
- */
 static int bluescsi_listfiles(int dev, int print)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_FILES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -365,12 +310,12 @@ static int bluescsi_listfiles(int dev, int print)
 	int num_files;
 	
 	if (verbose)
-		fprintf (stdout, "Listing files on %i\n", dev);
+		fprintf (stdout, "Listing files on dev %d\n", dev);
 
 	num_files = bluescsi_countfiles (dev);
 	if (num_files < 0 || num_files > MAX_FILES)
 	{
-		fprintf (stderr, "Error: listfiles num_files invalid: %i", num_files);
+		fprintf (stderr, "Error: listfiles num_files invalid: %i\n", num_files);
 		return -1;
 	}
 	files_count = num_files;
@@ -389,127 +334,153 @@ static int bluescsi_listfiles(int dev, int print)
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, buf_size) != 0)
 	{
 		fprintf (stderr, "Error: listfiles failed - %s\n", strerror(errno));
+		free(buf);
 		return -1;
 	}
-	//Copy SCSI data to global files var	
+
 	for (i = 0; i < num_files; i++) {
 		memcpy(&files[i], buf + i * sizeof(ToolboxFileEntry), sizeof(ToolboxFileEntry));
 		files[i].name[sizeof(files[i].name) - 1] = '\0';
 	}
+	free(buf);
+
 	if (verbose || print)
 	{	
-		for (i = 0;i < num_files;i++)
+		for (i = 0; i < num_files; i++)
 			fprintf (stdout, "#%i %s %li bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
 	}
 	return 0;
 }
-/*
- * BLUESCSI_TOOLBOX_GET_FILE 0xD1
- * Transfers a file from the ToolBoxSharedDir (Default /shared) to the Host computer.
- *
- * CDB[1] contains the index of the file to transfer.
- *
- * CDB[2..5] contains the offset in the file in 4096 byte blocks. Big endian.
- */
 
+/*
+ * Receiving Files (BlueSCSI /shared -> Host)
+ * BLUESCSI_TOOLBOX_GET_FILE (0xD1)
+ */
 static int bluescsi_getfile(int dev, int idx, char *outdir)
 {
 	char cmd[10];
-	char buf[MAX_DATA_LEN];
+	char *buf;
 	FILE *fd;
 	char *filename;
-	size_t bytes_written;
-	size_t bytes_left;
-	int blk_idx = 0;
+	long int total_bytes;
+	long int total_blocks;
+	long int blk_offset = 0;
+	long int bytes_written = 0;
+	long int bytes_to_read;
+	int blocks_to_req;
+	int ret;
 
+	if (strlen(outdir) < 1)
+		strcpy(outdir, "./");
 
-	memset(cmd, 0, sizeof(cmd));
-	cmd[0] = BLUESCSI_TOOLBOX_GET_FILE;
-	cmd[1] = idx;
-	cmd[2] = 0; //Index offset in MAX_DATA_LEN blocks
-
-	if (strlen (outdir) < 2)//Default to current directory
-		strcpy (outdir, "./");
-	//We need to populate the files struct first before doing anything else
-	if (bluescsi_listfiles (dev, 0) != 0)
+	if (bluescsi_listfiles(dev, 0) != 0)
 	{
-		fprintf (stderr, "Error: getfile couldn't listfiles\n");
+		fprintf(stderr, "Error: getfile couldn't listfiles\n");
 		return -1;
 	}
-	
+
+	if (idx < 0 || idx >= files_count)
+	{
+		fprintf(stderr, "Error: invalid file index %d\n", idx);
+		return -1;
+	}
+
+	total_bytes = size_to_long(files[idx].size);
 	if (verbose)
-		fprintf (stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, size_to_long(files[idx].size));
-	filename = malloc (strlen(outdir) + strlen(files[idx].name));
+		fprintf(stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, total_bytes);
+
+	filename = (char *)malloc(strlen(outdir) + strlen(files[idx].name) + 2);
 	if (filename == NULL)
 	{
-		fprintf (stderr, "Error mallocing filename\n");
+		fprintf(stderr, "Error: malloc failed for filename\n");
 		return -1;
 	}
 
-	fprintf (stdout, "Fetching %s\n", files[idx].name);
-	strcpy (filename, outdir);
-	strcat (filename, files[idx].name);
-	if (verbose)
-		fprintf (stdout, "Writing to file %s\n", filename);
+	if (outdir[strlen(outdir) - 1] == '/')
+		sprintf(filename, "%s%s", outdir, files[idx].name);
+	else
+		sprintf(filename, "%s/%s", outdir, files[idx].name);
+
+	fprintf(stdout, "Fetching %s (%ld bytes)\n", files[idx].name, total_bytes);
 	fd = fopen(filename, "wb");
 	if (fd == NULL)
 	{
-		fprintf (stderr, "Error: getfile couldn't open %s\n", filename);
+		fprintf(stderr, "Error: getfile couldn't open %s\n", filename);
+		free(filename);
 		return -1;
 	}
-	memset(buf, 0, sizeof(buf));
-	bytes_written = 0;
-	bytes_left = 0;
 
-	//Read the data from the SCSI bus and store to disk 
-	//TODO timeouts and sanity checks
-	while (1)
-	{	
-		if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, MAX_DATA_LEN) != 0)
+	if (total_bytes == 0)
+	{
+		fclose(fd);
+		free(filename);
+		return 0;
+	}
+
+	buf = (char *)malloc(GET_BUF_SIZE);
+	if (buf == NULL)
+	{
+		fprintf(stderr, "Error: malloc failed for receive buffer\n");
+		fclose(fd);
+		free(filename);
+		return -1;
+	}
+
+	/* Total 4096-byte blocks */
+	total_blocks = (total_bytes + GET_BLOCK_SIZE - 1) / GET_BLOCK_SIZE;
+
+	while (blk_offset < total_blocks)
+	{
+		long int blocks_remaining = total_blocks - blk_offset;
+		blocks_to_req = (blocks_remaining < GET_BLOCKS_PER_XFER) ? blocks_remaining : GET_BLOCKS_PER_XFER;
+
+		/* Determine exact bytes to expect for this SCSI command */
+		if (blk_offset + blocks_to_req == total_blocks) {
+			/* Final chunk includes last block, size buffer to remaining file bytes */
+			bytes_to_read = total_bytes - bytes_written;
+		} else {
+			bytes_to_read = blocks_to_req * GET_BLOCK_SIZE;
+		}
+
+		memset(cmd, 0, sizeof(cmd));
+		cmd[0] = BLUESCSI_TOOLBOX_GET_FILE;
+		cmd[1] = idx;
+		cmd[2] = (unsigned char)((blk_offset >> 24) & 0xFF);
+		cmd[3] = (unsigned char)((blk_offset >> 16) & 0xFF);
+		cmd[4] = (unsigned char)((blk_offset >>  8) & 0xFF);
+		cmd[5] = (unsigned char)((blk_offset      ) & 0xFF);
+		cmd[6] = (unsigned char)(blocks_to_req & 0xFF);
+
+		memset(buf, 0, GET_BUF_SIZE);
+		ret = scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, bytes_to_read);
+		if (ret != 0)
 		{
-			fprintf (stderr, "Error: getfile failed during transfer - %s\n", strerror(errno));
-			fclose (fd);
+			fprintf(stderr, "Error: getfile failed during transfer at block %ld - %s\n", blk_offset, strerror(errno));
+			fclose(fd);
+			free(buf);
+			free(filename);
 			return -1;
 		}
 
-		bytes_left = size_to_long (files[idx].size) - bytes_written;
-		if (verbose)
-			fprintf (stdout, "Bytes left: %li\n", bytes_left);
-		if (bytes_left <= 0)
+		if (fwrite(buf, 1, bytes_to_read, fd) != (size_t)bytes_to_read)
 		{
-			if (verbose)
-				fprintf (stdout, "Transfer of %s complete\n", filename);
-			break;
+			fprintf(stderr, "Error: fwrite failed writing to %s\n", filename);
+			fclose(fd);
+			free(buf);
+			free(filename);
+			return -1;
 		}
 
-		//Check to see if we are on the last chunk
-		if (bytes_left < MAX_DATA_LEN)
-		{
-			bytes_written += fwrite (buf, sizeof(unsigned char), bytes_left, fd);
-			break;
-		}
-		//Otherwise write the chunk and move onto the next one
-		bytes_written += fwrite (buf, sizeof(unsigned char), MAX_DATA_LEN, fd);
-
-		//increment the offset
-		blk_idx++;
-		cmd[2] = (unsigned char)(blk_idx >> 24) & 0xFF;
-		cmd[3] = (unsigned char)(blk_idx >> 16) & 0xFF;
-		cmd[4] = (unsigned char)(blk_idx >>  8) & 0xFF;
-		cmd[5] = (unsigned char)(blk_idx      ) & 0xFF;
+		bytes_written += bytes_to_read;
+		blk_offset += blocks_to_req;
 	}
-	fclose (fd);
+
+	fclose(fd);
+	free(buf);
+	free(filename);
 	return 0;
 }
 
-
-/** TOOLBOX_MODE_DEVICES (read, length 10)
- * Input:
- *  CDB 00 = command byte
- * Output:
- *  8 bytes, each indicating the device type of the emulated SCSI devices
- *           or 0xFF for not-enabled targets
- */
 static int bluescsi_listdevices(int dev, char **outbuf)
 {
 	char cmd[10] = {BLUESCSI_TOOLBOX_MODE_DEVICES, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -531,7 +502,6 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 		return -1;
 }
 
-//Interrogate the device and find out it's capabilties
 static int bluescsi_inquiry(int dev, int print)
 {
 	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};	
@@ -550,13 +520,13 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stderr, "Error: inquiry command failed - %s\n", strerror(errno));
 		return 1;
 	}
-	//Clear and fill the buffer with the inquiry data
+
 	memset (&inq, 0, sizeof(scsi_inquiry));
 	memcpy (&inq.version, &buf[2], 1);
 	memcpy (&inq.vendor_id, &buf[8], sizeof(inq.vendor_id) - 1);
-	inq.vendor_id[9] = '\0';
+	inq.vendor_id[8] = '\0';
 	memcpy (&inq.product_id, &buf[16], sizeof(inq.product_id) - 1);
-	inq.product_id[17] = '\0';
+	inq.product_id[16] = '\0';
 	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
 	inq.product_rev[32] = '\0';
 
@@ -567,8 +537,8 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
 		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
 	}
-	// Print the Toolbox API version if the extended data is present
-	additional_len = buf[4]; //offset 4 contains how much extra data is in the packet
+
+	additional_len = buf[4];
 	total_len = additional_len + 5;
 
 	if (total_len <= sizeof(buf)) {
@@ -578,38 +548,31 @@ static int bluescsi_inquiry(int dev, int print)
 
 		if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER) {
 			fprintf(stdout, "Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
-			//return -1;
 		}
-
 	} else {
 		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
 	}
 
-	//Get the 8 byte device flags to see what type it is
 	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
 		if (verbose)
 			fprintf (stdout, "Device flags: ");
 		for (i = 0; i < 8; i++)
 		{
-			device_list[i] = dev_flags[i]; //Write the falgs to the device list
+			device_list[i] = dev_flags[i];
 			if (verbose)
 				fprintf (stdout,"%02x ", (unsigned char) dev_flags[i]);
 		}
 		if (verbose)
 			fprintf(stdout, "\n");
 		free(dev_flags);
-
-
 	}
 	else {
 		fprintf (stderr, "Failed to fetch device flags with bluescsi_listdevices(): %s\n", strerror(errno));
-		free(dev_flags);
 		return 1;
 	}
 
-	//TODO Once a BlueSCSI drive is found, send a MODE SENSE 0x1A command for page 0x31. Validate it against the BlueSCSIVendorPage (see: mode.c)
 	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
-		return 0; //TODO FIX FIX FIX HDD 
+		return 0;
 	else
 	{
 		fprintf (stderr, "Error: didn't find ID %s in product_rev\n", BlueSCSI_ID);
@@ -620,12 +583,10 @@ static int bluescsi_inquiry(int dev, int print)
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
 {
 	int dev;
-	int dev_scsi_id; //SCSI ID pulled from path
-	int readonly; //Needed to determine if it's a CDROM and only able to be opened READONLY
-	readonly = 0;
+	int dev_scsi_id;
+	int readonly = 0;
 	
-	//Open the device read only if we are attempting a CD operation
-	if (list == MODE_CD || cd_img != NOT_ACTIVE) //TODO Probably need to detect more modes here
+	if (list == MODE_CD || cd_img != NOT_ACTIVE)
 	       readonly = 1;
 
 	dev = scsi_open(path, readonly);
@@ -633,8 +594,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		if (!readonly)
 		{
 			fprintf (stderr, "Error opening device for read/write, trying to open readonly\n");
-			dev = scsi_open(path, 1); //Try to open the device as read only
-			
+			dev = scsi_open(path, 1);
 		}
 		if (dev < 0) {
 			fprintf(stderr, "ERROR: Cannot open device: %s\nTry running again as root\n", strerror(errno));
@@ -642,8 +602,6 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		}
 	}
 
-	//Do inquiry to check we are working with a BlueSCSI
-	//device_type = bluescsi_inquiry (dev, PRINT_OFF);
 	if (bluescsi_inquiry (dev, PRINT_OFF) != 0)
 	{
 		fprintf (stderr, "Didn't find a BlueSCSI device at %s\n", path);
@@ -714,6 +672,8 @@ int main(int argc, char *argv[])
 	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
 	char outdir[1024];
 
+	memset(outdir, 0, sizeof(outdir));
+
 	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
@@ -752,7 +712,7 @@ int main(int argc, char *argv[])
 	
 	argc -= optind;
 	argv += optind;
-	//Stop any removable media managers running on the host system before changing CDs
+
 	if (cdimg != -1)
 		mediad_stop ();
 
@@ -763,7 +723,7 @@ int main(int argc, char *argv[])
 	} else if (argc > 1) {
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
-	//strcpy (device_path, argv[0]); //Copy the path for later
+
 	do_drive(argv[0], list, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)

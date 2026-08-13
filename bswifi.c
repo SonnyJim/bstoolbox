@@ -41,16 +41,16 @@ struct wifi_network_entry {
     char ssid[64];
     unsigned char bssid[6];
     int8_t rssi;
-    uint8_t channel;
-    uint8_t flags;
-    uint8_t _padding;
+    unsigned char channel;
+    unsigned char flags;
+    unsigned char _padding;
 };
 
 struct wifi_join_request {
     char    ssid[64];
     char    key[64];
-    uint8_t channel;
-    uint8_t _padding;
+    unsigned char channel;
+    unsigned char _padding;
 };
 
 /* SCSI INQUIRY Response Buffer Structure (Standard 36-byte response) */

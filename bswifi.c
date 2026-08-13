@@ -370,13 +370,11 @@ wifi_info(int dev)
 
     if (size > WIFI_NETWORK_ENTRY_SIZE)
     {
-        fprintf(stderr, "WARNING: INFO returned size %u, expected at most %d\n",
-                size, WIFI_NETWORK_ENTRY_SIZE);
-    }
+	    fprintf(stderr, "WARNING: INFO returned size %u, expected at most %u\n", size, (unsigned int)WIFI_NETWORK_ENTRY_SIZE);}
 
     if (size < WIFI_NETWORK_ENTRY_SIZE)
     {
-        fprintf(stderr, "WARNING: INFO response is shorter than wifi_network_entry\n");
+	    fprintf(stderr, "WARNING: INFO response is shorter than wifi_network_entry\n");
     }
 
     fprintf(stdout, "\nCurrent Wi-Fi network:\n");

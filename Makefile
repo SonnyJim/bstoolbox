@@ -2,6 +2,9 @@ CC = cc
 CFLAGS =
 LDFLAGS =
 
+PREFIX = /usr
+BINDIR = $(PREFIX)/sbin
+
 # Default target
 default: detect
 
@@ -47,6 +50,19 @@ irix.o: irix.c os.h
 
 linux.o: linux.c os.h
 	$(CC) $(CFLAGS) -c linux.c
+
+# Install target
+install: detect
+	@OS=`uname -s`; \
+	if [ "$$OS" = "IRIX64" ] || [ "$$OS" = "IRIX" ]; then \
+		TARGET_DIR="/usr/sbin"; \
+	else \
+		TARGET_DIR="$(BINDIR)"; \
+	fi; \
+	echo "*** Installing binaries to $$TARGET_DIR..."; \
+	mkdir -p $$TARGET_DIR; \
+	cp bstoolbox bswifi $$TARGET_DIR/; \
+	chmod 755 $$TARGET_DIR/bstoolbox $$TARGET_DIR/bswifi
 
 # Clean rule
 clean:

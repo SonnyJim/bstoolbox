@@ -1007,11 +1007,11 @@ static void do_drive(char *path, int mode, int verbose, int cd_img, int file, ch
 
 static void usage(void)
 {
-	fprintf(stderr, "\nUsage:   bstoolbox [options] [device]\n\n");
+	fprintf(stderr, "\nUsage:   bstoolbox <device> [options]\n\n");
 #if defined(OS_IRIX)
-	fprintf(stderr, "example: bstoolbox -s /dev/scsi/sc0d1l0\n\n");
+	fprintf(stderr, "example: bstoolbox /dev/scsi/sc0d1l0 -s\n\n");
 #elif defined(OS_LINUX)
-	fprintf(stderr, "example: bstoolbox -s /dev/sg2\n\n");
+	fprintf(stderr, "example: bstoolbox /dev/sg2 -s\n\n");
 #endif
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "\t-h      : display this help message and exit\n");
@@ -1034,9 +1034,21 @@ int main(int argc, char *argv[])
 {
 	int c, cdimg = NOT_ACTIVE, mode = 0, file = NOT_ACTIVE;
 	char outdir[1024];
+	char *device_path;
 
 	memset(outdir, 0, sizeof(outdir));
 
+	/* Ensure at least the device path is provided */
+	if (argc < 2 || argv[1][0] == '-') {
+		fprintf(stderr, "Error: No device path specified as first argument.\n");
+		usage();
+		return 1;
+	}
+
+	device_path = argv[1];
+
+	/* Start parsing options from argv[2] onwards */
+	optind = 2;
 	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:wW:L")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
@@ -1082,22 +1094,11 @@ int main(int argc, char *argv[])
 			usage();
 			return 1;
 	}
-	
-	argc -= optind;
-	argv += optind;
 
 	if (cdimg != -1)
 		mediad_stop ();
 
-	if (argc < 1) {
-		fprintf (stderr, "No device path entered\n");
-		usage();
-		return 1;
-	} else if (argc > 1) {
-		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
-	}
-
-	do_drive(argv[0], mode, verbose, cdimg, file, outdir);
+	do_drive(device_path, mode, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)
 		mediad_start ();

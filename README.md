@@ -12,9 +12,9 @@ NixOS
 
 ## bstoolbox Usage
 ```
-Usage:   bstoolbox [options] [device]
+Usage:   bstoolbox <device> [options]
 
-example: bstoolbox -s /dev/scsi/sc0d1l0
+example: bstoolbox /dev/scsi/sc0d1l0 -s
 
 Options:
         -h      : display this help message and exit
@@ -33,7 +33,6 @@ Options:
 
 
 Please make sure you run the program as root.
-
 ```
 
 ## bswifi Usage

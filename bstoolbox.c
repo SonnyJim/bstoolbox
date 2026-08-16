@@ -501,6 +501,67 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	else
 		return -1;
 }
+static int bluescsi_check_vendor_page(int dev)
+{
+        static const unsigned char BlueSCSIVendorPage[] = {
+                0x31, /* Page code */
+                42,   /* Page length */
+                'B','l','u','e','S','C','S','I',' ','i','s',' ','t','h','e',' ','B','E','S','T',' ',
+                'S','T','O','L','E','N',' ','F','R','O','M',' ','B','L','U','E','S','C','S','I',0x00
+        };
+
+        unsigned char cmd[6];
+        unsigned char buf[64];
+        unsigned char bdl;
+        unsigned char returned_page_code;
+        int page_offset;
+
+        /* MODE SENSE (6) CDB: Opcode 0x1A, requesting Page 0x31 */
+        cmd[0] = 0x1A; /* MODE SENSE (6) */
+        cmd[1] = 0x08; /* DBD = 1 (Disable Block Descriptors) */
+        cmd[2] = 0x31; /* Page code 0x31 */
+        cmd[3] = 0x00; /* Subpage code */
+        cmd[4] = 64;   /* Allocation length */
+        cmd[5] = 0x00; /* Control */
+
+        memset(buf, 0, sizeof(buf));
+	
+	if (verbose)
+		fprintf(stdout, "Fetching BlueSCSI vendor page\n");
+        if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+        {
+                if (verbose)
+                        fprintf(stderr, "Error: MODE SENSE (6) command failed - %s\n", strerror(errno));
+                return 1;
+        }
+
+        /* MODE SENSE (6) header is 4 bytes: [0]=length, [1]=medium type, [2]=dev param, [3]=BDL */
+        bdl = buf[3];
+        page_offset = 4 + bdl;
+
+        /* Ensure response length contains the full expected page */
+        if (page_offset + (int)sizeof(BlueSCSIVendorPage) > (int)sizeof(buf))
+        {
+                if (verbose)
+                        fprintf(stderr, "Error: MODE SENSE response too short for vendor page 0x31\n");
+                return 1;
+        }
+
+        /* Mask out bit 7 (PS - Parameters Savable bit) on returned page code byte */
+        returned_page_code = buf[page_offset] & 0x3F;
+
+        if (returned_page_code != BlueSCSIVendorPage[0] ||
+            memcmp(&buf[page_offset + 1], &BlueSCSIVendorPage[1], sizeof(BlueSCSIVendorPage) - 1) != 0)
+        {
+                if (verbose)
+                        fprintf(stderr, "Error: Vendor page 0x31 data mismatch\n");
+                return 1;
+        }
+	
+	if (verbose)
+		fprintf(stdout, "Vendor page: %.*s\n", 41, (char *)&buf[page_offset + 2]);
+        return 0;
+}
 
 static int bluescsi_inquiry(int dev, int print)
 {
@@ -543,11 +604,18 @@ static int bluescsi_inquiry(int dev, int print)
 	//Do not proceed if it's not a BlueSCSI device
 	if (strstr (inq.vendor_id, BlueSCSI_vendor_id) == NULL)
 	{
-		fprintf (stderr, "Error: didn't find vendor_id \"%s\" in %s\n", BlueSCSI_vendor_id, inq.vendor_id);
+		fprintf (stderr, "Error: didn't find \"%s\" in vendor_id:%s\n", BlueSCSI_vendor_id, inq.vendor_id);
 		return 1;
 	}
 	else if (verbose || print)
 		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev)); //Don't try to get debug mode if it isn't a BlueSCSI
+
+	//Check the BlueSCSIVendorPage
+	if (bluescsi_check_vendor_page(dev) != 0)
+	{
+		fprintf (stderr, "Error: didn't find BlueSCSI vendor page\n");
+		return 1;
+	}
 
 	additional_len = buf[4];
 	total_len = additional_len + 5;
@@ -558,10 +626,13 @@ static int bluescsi_inquiry(int dev, int print)
 			fprintf(stdout, "Toolbox API version: %u\n", toolbox_api_version);
 
 		if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER) {
-			fprintf(stdout, "Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
+			fprintf(stdout, "WARNING! Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
+			//return 1;
+
 		}
 	} else {
 		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
+		return 1;
 	}
 
 	if (bluescsi_listdevices(dev, &dev_flags) == 0) {

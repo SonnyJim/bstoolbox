@@ -9,15 +9,182 @@ ToolboxFileEntry files[MAX_FILES];
 int files_count = 0;
 
 /* Helper function to convert 40bit size into a long */
-static long int size_to_long(const unsigned char size[5])
+static long long int size_to_long(const unsigned char size[5])
 {
-    int i;
-    long int result = 0;
-    for (i = 0; i < 5; i++)
-    {
-        result = (result << 8) | size[i];
-    }
-    return result;
+	int i;
+	long int result = 0;
+	for (i = 0; i < 5; i++)
+	{
+		result = (result << 8) | size[i];
+	}
+	return result;
+}
+
+/*
+ * BLUESCSI_TOOLBOX_METADATA (0xD9) Subcommands
+ */
+
+/* Subcommand 0x00 - List Devices */
+static int bluescsi_metadata_list_devices(int dev, unsigned char dev_map[8])
+{
+	unsigned char cmd[10];
+	unsigned char buf[8];
+	int i;
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = BLUESCSI_TOOLBOX_METADATA;
+	cmd[1] = BLUESCSI_TOOLBOX_METADATA_LIST_DEVICES;
+	cmd[8] = 0x08; /* Allocation length = 8 bytes */
+
+	memset(buf, 0xFF, sizeof(buf));
+
+	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	{
+		if (verbose)
+			fprintf(stderr, "Error: metadata list_devices command failed - %s\n", strerror(errno));
+		return -1;
+	}
+
+	for (i = 0; i < 8; i++)
+	{
+		dev_map[i] = buf[i];
+	}
+
+	return 0;
+}
+
+/* Subcommand 0x01 - Get Capabilities */
+static int bluescsi_metadata_get_capabilities(int dev, unsigned char *api_ver, unsigned char *caps)
+{
+	unsigned char cmd[10];
+	unsigned char buf[8];
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = BLUESCSI_TOOLBOX_METADATA;
+	cmd[1] = BLUESCSI_TOOLBOX_METADATA_GET_CAP;
+	cmd[8] = 0x08; /* Allocation length = 8 bytes */
+
+	memset(buf, 0, sizeof(buf));
+
+	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	{
+		/* Legacy devices return CHECK_CONDITION: default to API v0 and no capabilities */
+		if (verbose)
+			fprintf(stdout, "Metadata get_capabilities unsupported, assuming legacy device (API v0, no caps)\n");
+		*api_ver = 0;
+		*caps = 0;
+		return 0;
+	}
+
+	*api_ver = buf[0];
+	*caps = buf[1];
+
+	if (verbose)
+	{
+		fprintf(stdout, "Toolbox Metadata API Version: %u\n", *api_ver);
+		fprintf(stdout, "Capability Flags: 0x%02X\n", *caps);
+		fprintf(stdout, " - CAP_LARGE_TRANSFERS: %s\n", (*caps & 0x01) ? "Yes" : "No");
+		fprintf(stdout, " - CAP_LARGE_SEND     : %s\n", (*caps & 0x02) ? "Yes" : "No");
+		fprintf(stdout, " - CAP_SET_WORKING_DIR: %s\n", (*caps & 0x04) ? "Yes" : "No");
+	}
+
+	return 0;
+}
+
+static int bluescsi_metadata_set_working_dir(int dev, const char *path)
+{
+	unsigned char cmd[10];
+	size_t path_len;
+	int ret;
+
+	if (verbose)
+		fprintf(stdout, "Setting working directory to: %s\n", path);
+
+	path_len = (path != NULL) ? strlen(path) : 0;
+	if (path_len > 64)
+	{
+		fprintf(stderr, "Error: working directory path exceeds maximum length of 64 bytes\n");
+		return -1;
+	}
+	else if (path_len == 0)
+	{
+		fprintf(stdout, "Error: set working dir path_len was zero\n");
+		return -1;
+	}
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = BLUESCSI_TOOLBOX_METADATA;
+	cmd[1] = BLUESCSI_TOOLBOX_METADATA_SET_WDIR;
+	cmd[8] = (unsigned char)path_len; /* Path length in bytes (DATA_OUT) */
+
+
+	ret = scsi_send_commandw(dev, cmd, sizeof(cmd), (unsigned char *)path, (int)path_len);
+	if (ret != 0)
+	{
+		fprintf(stderr, "Error: set_working_dir failed - %s\n", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+static char *bluescsi_metadata_get_working_dir(int dev)
+{
+        unsigned char cmd[10];
+        unsigned char buf[256];
+        char *wdir;
+        size_t req_len;
+        int ret;
+
+        req_len = 255; /* Cap at 255 bytes so cmd[8] fits and leaves room for '\0' */
+
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = BLUESCSI_TOOLBOX_METADATA;
+        cmd[1] = BLUESCSI_TOOLBOX_METADATA_GET_WDIR;
+        cmd[7] = (unsigned char)((req_len >> 8) & 0xFF);
+        cmd[8] = (unsigned char)(req_len & 0xFF);
+
+        memset(buf, 0, sizeof(buf));
+
+        ret = scsi_send_command(dev, cmd, sizeof(cmd), buf, (int)req_len);
+        if (ret != 0)
+        {
+                fprintf(stderr, "Error: get_working_dir failed - %s\n", strerror(errno));
+                return NULL;
+        }
+
+        buf[255] = '\0';
+
+        wdir = (char *)malloc(strlen((char *)buf) + 1);
+        if (wdir == NULL)
+        {
+                fprintf(stderr, "Error: Memory allocation failed for working directory string\n");
+                return NULL;
+        }
+
+        strcpy(wdir, (char *)buf);
+
+        if (verbose)
+                fprintf(stdout, "Current working directory: %s\n", wdir);
+
+        return wdir;
+}
+
+static void bluescsi_print_wdir (int dev)
+{
+	fprintf (stdout, "BlueSCSI working directory: %s\n", bluescsi_metadata_get_working_dir(dev));
+}
+
+static int bluescsi_set_wdir (int dev, char *outdir)
+{
+	return bluescsi_metadata_set_working_dir (dev, outdir);
+}
+
+static int bluescsi_get_log (int dev)
+{
+	fprintf (stderr, "Not implemented\n");
+	return 1;
+
 }
 
 /*
@@ -41,7 +208,7 @@ static int bluescsi_sendfile(int dev, char *path)
 	if (verbose)
 		fprintf(stdout, "sendfile: %s\n", path);
 
-	// Extract base filename
+	/* Extract base filename */
 	base_name = strrchr(path, '/');
 	if (base_name == NULL) {
 		base_name = path;
@@ -57,7 +224,7 @@ static int bluescsi_sendfile(int dev, char *path)
 	memset(filename, 0, NAME_BUF_SIZE);
 	strncpy(filename, base_name, NAME_BUF_SIZE - 1);
 
-	// Open file
+	/* Open file */
 	fd = fopen(path, "rb");
 	if (fd == NULL) {
 		fprintf(stderr, "Error: sendfile couldn't open %s\n", path);
@@ -74,7 +241,7 @@ static int bluescsi_sendfile(int dev, char *path)
 	}
 	filesize = st.st_size;
 
-	// 1. Send BLUESCSI_TOOLBOX_SEND_FILE_PREP (0xD3)
+	/* 1. Send BLUESCSI_TOOLBOX_SEND_FILE_PREP (0xD3) */
 	if (scsi_send_commandw(dev, (unsigned char *)cmd, SCSI_CMD_LENGTH, (unsigned char *)filename, 33) != 0) {
 		fprintf(stderr, "Error: sendfileprep failed - %s\n", strerror(errno));
 		fclose(fd);
@@ -88,7 +255,7 @@ static int bluescsi_sendfile(int dev, char *path)
 		return 1;
 	}
 
-	// 2. Send Data Blocks via BLUESCSI_TOOLBOX_SEND_FILE_10 (0xD4)
+	/* 2. Send Data Blocks via BLUESCSI_TOOLBOX_SEND_FILE_10 (0xD4) */
 	while (bytes_read < filesize) {
 		long int chunk = (filesize - bytes_read) < SEND_BUF_SIZE ? (filesize - bytes_read) : SEND_BUF_SIZE;
 		memset(send_buf, 0, SEND_BUF_SIZE);
@@ -137,7 +304,7 @@ static int bluescsi_sendfile(int dev, char *path)
 
 	free(send_buf);
 
-	// 3. Send BLUESCSI_TOOLBOX_SEND_FILE_END (0xD5)
+	/* 3. Send BLUESCSI_TOOLBOX_SEND_FILE_END (0xD5) */
 	memset(cmd, 0, sizeof(cmd));
 	cmd[0] = BLUESCSI_TOOLBOX_SEND_FILE_END;
 
@@ -347,7 +514,7 @@ static int bluescsi_listfiles(int dev, int print)
 	if (verbose || print)
 	{	
 		for (i = 0; i < num_files; i++)
-			fprintf (stdout, "#%i %s %li bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
+			fprintf (stdout, "#%i %s %llu bytes\n", files[i].index, files[i].name, size_to_long(files[i].size));
 	}
 	return 0;
 }
@@ -501,66 +668,67 @@ static int bluescsi_listdevices(int dev, char **outbuf)
 	else
 		return -1;
 }
+
 static int bluescsi_check_vendor_page(int dev)
 {
-        static const unsigned char BlueSCSIVendorPage[] = {
-                0x31, /* Page code */
-                42,   /* Page length */
-                'B','l','u','e','S','C','S','I',' ','i','s',' ','t','h','e',' ','B','E','S','T',' ',
-                'S','T','O','L','E','N',' ','F','R','O','M',' ','B','L','U','E','S','C','S','I',0x00
-        };
+	static const unsigned char BlueSCSIVendorPage[] = {
+		0x31, /* Page code */
+		42,   /* Page length */
+		'B','l','u','e','S','C','S','I',' ','i','s',' ','t','h','e',' ','B','E','S','T',' ',
+		'S','T','O','L','E','N',' ','F','R','O','M',' ','B','L','U','E','S','C','S','I',0x00
+	};
 
-        unsigned char cmd[6];
-        unsigned char buf[64];
-        unsigned char bdl;
-        unsigned char returned_page_code;
-        int page_offset;
+	unsigned char cmd[6];
+	unsigned char buf[64];
+	unsigned char bdl;
+	unsigned char returned_page_code;
+	int page_offset;
 
-        /* MODE SENSE (6) CDB: Opcode 0x1A, requesting Page 0x31 */
-        cmd[0] = 0x1A; /* MODE SENSE (6) */
-        cmd[1] = 0x08; /* DBD = 1 (Disable Block Descriptors) */
-        cmd[2] = 0x31; /* Page code 0x31 */
-        cmd[3] = 0x00; /* Subpage code */
-        cmd[4] = 64;   /* Allocation length */
-        cmd[5] = 0x00; /* Control */
+	/* MODE SENSE (6) CDB: Opcode 0x1A, requesting Page 0x31 */
+	cmd[0] = 0x1A; /* MODE SENSE (6) */
+	cmd[1] = 0x08; /* DBD = 1 (Disable Block Descriptors) */
+	cmd[2] = 0x31; /* Page code 0x31 */
+	cmd[3] = 0x00; /* Subpage code */
+	cmd[4] = 64;   /* Allocation length */
+	cmd[5] = 0x00; /* Control */
 
-        memset(buf, 0, sizeof(buf));
+	memset(buf, 0, sizeof(buf));
 	
 	if (verbose)
 		fprintf(stdout, "Fetching BlueSCSI vendor page\n");
-        if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
-        {
-                if (verbose)
-                        fprintf(stderr, "Error: MODE SENSE (6) command failed - %s\n", strerror(errno));
-                return 1;
-        }
+	if (scsi_send_command(dev, cmd, sizeof(cmd), buf, sizeof(buf)) != 0)
+	{
+		if (verbose)
+			fprintf(stderr, "Error: MODE SENSE (6) command failed - %s\n", strerror(errno));
+		return 1;
+	}
 
-        /* MODE SENSE (6) header is 4 bytes: [0]=length, [1]=medium type, [2]=dev param, [3]=BDL */
-        bdl = buf[3];
-        page_offset = 4 + bdl;
+	/* MODE SENSE (6) header is 4 bytes: [0]=length, [1]=medium type, [2]=dev param, [3]=BDL */
+	bdl = buf[3];
+	page_offset = 4 + bdl;
 
-        /* Ensure response length contains the full expected page */
-        if (page_offset + (int)sizeof(BlueSCSIVendorPage) > (int)sizeof(buf))
-        {
-                if (verbose)
-                        fprintf(stderr, "Error: MODE SENSE response too short for vendor page 0x31\n");
-                return 1;
-        }
+	/* Ensure response length contains the full expected page */
+	if (page_offset + (int)sizeof(BlueSCSIVendorPage) > (int)sizeof(buf))
+	{
+		if (verbose)
+			fprintf(stderr, "Error: MODE SENSE response too short for vendor page 0x31\n");
+		return 1;
+	}
 
-        /* Mask out bit 7 (PS - Parameters Savable bit) on returned page code byte */
-        returned_page_code = buf[page_offset] & 0x3F;
+	/* Mask out bit 7 (PS - Parameters Savable bit) on returned page code byte */
+	returned_page_code = buf[page_offset] & 0x3F;
 
-        if (returned_page_code != BlueSCSIVendorPage[0] ||
-            memcmp(&buf[page_offset + 1], &BlueSCSIVendorPage[1], sizeof(BlueSCSIVendorPage) - 1) != 0)
-        {
-                if (verbose)
-                        fprintf(stderr, "Error: Vendor page 0x31 data mismatch\n");
-                return 1;
-        }
+	if (returned_page_code != BlueSCSIVendorPage[0] ||
+	    memcmp(&buf[page_offset + 1], &BlueSCSIVendorPage[1], sizeof(BlueSCSIVendorPage) - 1) != 0)
+	{
+		if (verbose)
+			fprintf(stderr, "Error: Vendor page 0x31 data mismatch\n");
+		return 1;
+	}
 	
 	if (verbose)
 		fprintf(stdout, "Vendor page: %.*s\n", 41, (char *)&buf[page_offset + 2]);
-        return 0;
+	return 0;
 }
 
 static int bluescsi_inquiry(int dev, int print)
@@ -574,6 +742,9 @@ static int bluescsi_inquiry(int dev, int print)
 	int additional_len;
 	int total_len;
 	int toolbox_api_version;
+	unsigned char dev_map[8];
+	unsigned char api_ver;
+	unsigned char caps;
 
 	memset(buf, 0, sizeof(buf));
 	if (verbose)
@@ -593,7 +764,6 @@ static int bluescsi_inquiry(int dev, int print)
 	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
 	inq.product_rev[4] = '\0';
 	
-	
 	if (verbose || print)
 	{
 		fprintf (stdout, "SCSI version: %i\n", inq.version);
@@ -601,16 +771,16 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
 	}
 	
-	//Do not proceed if it's not a BlueSCSI device
+	/* Do not proceed if it's not a BlueSCSI device */
 	if (strstr (inq.vendor_id, BlueSCSI_vendor_id) == NULL)
 	{
-		fprintf (stderr, "Error: didn't find \"%s\" in vendor_id:%s\n", BlueSCSI_vendor_id, inq.vendor_id);
+		fprintf (stderr, "Error: didn't find \"%s\" in vendor_id: %s\n", BlueSCSI_vendor_id, inq.vendor_id);
 		return 1;
 	}
 	else if (verbose || print)
-		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev)); //Don't try to get debug mode if it isn't a BlueSCSI
+		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev)); /* Don't try to get debug mode if it isn't a BlueSCSI */
 
-	//Check the BlueSCSIVendorPage
+	/* Check the BlueSCSIVendorPage */
 	if (bluescsi_check_vendor_page(dev) != 0)
 	{
 		fprintf (stderr, "Error: didn't find BlueSCSI vendor page\n");
@@ -627,17 +797,29 @@ static int bluescsi_inquiry(int dev, int print)
 
 		if (toolbox_api_version < BLUESCSI_TOOLBOX_API_VER) {
 			fprintf(stdout, "WARNING! Toolbox API version %u too old, expecting: %u\n", toolbox_api_version, BLUESCSI_TOOLBOX_API_VER);
-			//return 1;
-
 		}
 	} else {
 		fprintf(stdout, "Toolbox API version: not available (length mismatch)\n");
 		return 1;
 	}
 
-	if (bluescsi_listdevices(dev, &dev_flags) == 0) {
+	/* Use Metadata subcommand 0x00 to list devices */
+	if (bluescsi_metadata_list_devices(dev, dev_map) == 0) {
 		if (verbose)
-			fprintf (stdout, "Device flags: ");
+			fprintf (stdout, "Device flags (Metadata 0xD9:00): ");
+		for (i = 0; i < 8; i++)
+		{
+			device_list[i] = dev_map[i];
+			if (verbose)
+				fprintf (stdout,"%02x ", dev_map[i]);
+		}
+		if (verbose)
+			fprintf(stdout, "\n");
+	}
+	else if (bluescsi_listdevices(dev, &dev_flags) == 0) {
+		/* Fallback to legacy device list command if metadata 0xD9:00 fails */
+		if (verbose)
+			fprintf (stdout, "Device flags (Legacy): ");
 		for (i = 0; i < 8; i++)
 		{
 			device_list[i] = dev_flags[i];
@@ -649,20 +831,24 @@ static int bluescsi_inquiry(int dev, int print)
 		free(dev_flags);
 	}
 	else {
-		fprintf (stderr, "Failed to fetch device flags with bluescsi_listdevices(): %s\n", strerror(errno));
+		fprintf (stderr, "Failed to fetch device flags: %s\n", strerror(errno));
 		return 1;
 	}
+
+	/* Fetch Capabilities via Metadata 0xD9:01 */
+	bluescsi_metadata_get_capabilities(dev, &api_ver, &caps);
+
 	return 0;
 }
 
-static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)
+static void do_drive(char *path, int mode, int verbose, int cd_img, int file, char *outdir)
 {
 	int dev;
 	int dev_scsi_id;
 	int readonly = 0;
 	
-	if (list == MODE_CD || cd_img != NOT_ACTIVE)
-	       readonly = 1;
+	if (mode == MODE_CD || cd_img != NOT_ACTIVE)
+		readonly = 1;
 
 	dev = scsi_open(path, readonly);
 	if (dev < 0) {
@@ -685,9 +871,13 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 	}
 	
 	if ((dev_scsi_id = path_to_devnum(path)) < 0)
-		goto close_dev;
+	{
+		fprintf (stderr, "Failed to get dev_scsi_id from path_to_devnum\n");
+		scsi_close(dev);
+		exit(1);
+	}
 
-	if (list == MODE_CD)
+	if (mode == MODE_CD)
 	{
 		if (device_list[dev_scsi_id] != TYPE_CD)
 		{
@@ -698,14 +888,20 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		else
 			bluescsi_listcds(dev);
 	}
-	else if (list == MODE_INQUIRY)
+	else if (mode == MODE_INQUIRY)
 		bluescsi_inquiry(dev, PRINT_ON);
-	else if (list == MODE_DEBUG)
+	else if (mode == MODE_DEBUG)
 		bluescsi_setdebug(dev, file);
-	else if (list == MODE_SHARED)
+	else if (mode == MODE_SHARED)
 		bluescsi_listfiles(dev, PRINT_ON);
-	else if (list == MODE_PUT)
+	else if (mode == MODE_PUT)
 		bluescsi_sendfile (dev, outdir);
+	else if (mode == MODE_GET_WDIR)
+		bluescsi_print_wdir(dev);
+	else if (mode == MODE_SET_WDIR)
+		bluescsi_set_wdir(dev, outdir);
+	else if (mode == MODE_GET_LOG)
+		bluescsi_get_log(dev);
 	else if (file != NOT_ACTIVE)
 		bluescsi_getfile (dev, file, outdir);
 	else if (cd_img != NOT_ACTIVE)
@@ -715,8 +911,7 @@ static void do_drive(char *path, int list, int verbose, int cd_img, int file, ch
 		else
 			bluescsi_setnextcd(dev, cd_img);
 	}
-
-close_dev:
+	
 	scsi_close(dev);
 }
 
@@ -738,18 +933,21 @@ static void usage(void)
 	fprintf(stderr, "\t-g num  : get file from shared directory (1, 2, etc)\n");
 	fprintf(stderr, "\t-p file : put file to shared directory\n");
 	fprintf(stderr, "\t-o dir  : set output directory, defaults to current\n");
+	fprintf(stderr, "\t-w      : get current working directory\n");
+	fprintf(stderr, "\t-W dir  : set working directory\n");
+	fprintf(stderr, "\t-L      : Show BlueSCSI log\n");
 	fprintf(stderr, "\t-d num  : set debug mode (0 = off, 1 - on)\n");
 	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
 }
 
 int main(int argc, char *argv[])
 {
-	int c, cdimg = NOT_ACTIVE, list = 0, file = NOT_ACTIVE;
+	int c, cdimg = NOT_ACTIVE, mode = 0, file = NOT_ACTIVE;
 	char outdir[1024];
 
 	memset(outdir, 0, sizeof(outdir));
 
-	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:wW:L")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
@@ -761,20 +959,30 @@ int main(int argc, char *argv[])
 			break;
 		case 'p':
 			strncpy(outdir, optarg, sizeof(outdir) - 1);
-			list = MODE_PUT;
+			mode = MODE_PUT;
 			break;
 		case 'l':
-			list = MODE_CD;
+			mode = MODE_CD;
 			break;
 		case 's':
-			list = MODE_SHARED;
+			mode = MODE_SHARED;
 			break;
 		case 'i':
-			list = MODE_INQUIRY;
+			mode = MODE_INQUIRY;
 			break;
 		case 'd':
-			list = MODE_DEBUG;
+			mode = MODE_DEBUG;
 			file = atoi(optarg);
+			break;
+		case 'w':
+			mode = MODE_GET_WDIR;
+			break;
+		case 'W':
+			mode = MODE_SET_WDIR;
+			strncpy(outdir, optarg, sizeof(outdir) - 1);
+			break;
+		case 'L':
+			mode = MODE_GET_LOG;
 			break;
 		case 'v':
 			verbose = 1;
@@ -799,7 +1007,7 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "WARNING: Options after '%s' ignored.\n", argv[0]);
 	}
 
-	do_drive(argv[0], list, verbose, cdimg, file, outdir);
+	do_drive(argv[0], mode, verbose, cdimg, file, outdir);
 	
 	if (cdimg != -1)
 		mediad_start ();

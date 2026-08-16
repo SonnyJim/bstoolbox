@@ -430,7 +430,7 @@ wifi_join(int dev, const char *ssid, const char *key, int channel)
 
             /* Check if connected SSID matches requested SSID */
             if (strncmp(current_info.ssid, ssid, strlen(ssid)) == 0) {
-                printf(" Connected!\n");
+                printf("\nConnected!\n");
                 return 0;
             }
         }

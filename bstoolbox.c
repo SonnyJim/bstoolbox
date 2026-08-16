@@ -261,7 +261,7 @@ static int bluescsi_get_log(int dev, const char *outdir)
 	fclose(fd);
 
 	/* Clean up downloaded log file */
-	unlink(log_filepath);
+	//unlink(log_filepath);
 
 restore_wdir:
 	/* 6. Restore original working directory */

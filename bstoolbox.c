@@ -181,11 +181,10 @@ static int bluescsi_set_wdir (int dev, char *outdir)
 {
 	return bluescsi_metadata_set_working_dir (dev, outdir);
 }
-
-static int bluescsi_get_log(int dev)
+static int bluescsi_get_log(int dev, const char *outdir)
 {
 	char *orig_wdir = NULL;
-	char orig_filename[sizeof(files[0].name)];
+	char log_filepath[1024];
 	int log_idx = -1;
 	int i;
 	int ret = 0;
@@ -232,28 +231,25 @@ static int bluescsi_get_log(int dev)
 		goto restore_wdir;
 	}
 
-	/* Temporarily rename in memory so bluescsi_getfile writes directly to /tmp/BlueSCSI.log */
-	strncpy(orig_filename, files[log_idx].name, sizeof(orig_filename));
-	strncpy(files[log_idx].name, "BlueSCSI.log", sizeof(files[log_idx].name) - 1);
-	files[log_idx].name[sizeof(files[log_idx].name) - 1] = '\0';
-
-	/* 4. Download directly into "/tmp/BlueSCSI.log" */
-	if (bluescsi_getfile(dev, log_idx, "/tmp") != 0)
+	/* 4. Download log.txt directly into specified output directory */
+	if (bluescsi_getfile(dev, log_idx, (char *)outdir) != 0)
 	{
-		fprintf(stderr, "Error: get_log failed to fetch log.txt\n");
-		strncpy(files[log_idx].name, orig_filename, sizeof(files[log_idx].name));
+		fprintf(stderr, "Error: get_log failed to fetch log file\n");
 		ret = -1;
 		goto restore_wdir;
 	}
 
-	/* Restore original array entry name */
-	strncpy(files[log_idx].name, orig_filename, sizeof(files[log_idx].name));
+	/* Construct local path to read log.txt from outdir */
+	if (outdir != NULL && strlen(outdir) > 0 && outdir[strlen(outdir) - 1] == '/')
+		sprintf(log_filepath, "%slog.txt", outdir);
+	else
+		sprintf(log_filepath, "%s/log.txt", (outdir && strlen(outdir) > 0) ? outdir : ".");
 
-	/* 5. Print /tmp/BlueSCSI.log contents to stdout */
-	fd = fopen("/tmp/BlueSCSI.log", "r");
+	/* 5. Print log.txt contents to stdout */
+	fd = fopen(log_filepath, "r");
 	if (fd == NULL)
 	{
-		fprintf(stderr, "Error: get_log couldn't open fetched log file /tmp/BlueSCSI.log\n");
+		fprintf(stderr, "Error: get_log couldn't open fetched log file %s\n", log_filepath);
 		ret = -1;
 		goto restore_wdir;
 	}
@@ -264,8 +260,8 @@ static int bluescsi_get_log(int dev)
 	}
 	fclose(fd);
 
-	/* Clean up temporary log file */
-	unlink("/tmp/BlueSCSI.log");
+	/* Clean up downloaded log file */
+	unlink(log_filepath);
 
 restore_wdir:
 	/* 6. Restore original working directory */
@@ -620,11 +616,13 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	char *buf;
 	FILE *fd;
 	char *filename;
-	long int total_bytes;
-	long int total_blocks;
-	long int blk_offset = 0;
-	long int bytes_written = 0;
-	long int bytes_to_read;
+	unsigned long long total_bytes;
+	unsigned long long total_blocks;
+	unsigned long long blk_offset = 0;
+	unsigned long long bytes_written = 0;
+	unsigned long long blocks_remaining;
+	size_t bytes_to_read;
+	size_t bytes_to_write;
 	int blocks_to_req;
 	int ret;
 
@@ -645,7 +643,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 
 	total_bytes = size_to_long(files[idx].size);
 	if (verbose)
-		fprintf(stdout, "getfile :#%i %s %li bytes\n", files[idx].index, files[idx].name, total_bytes);
+		fprintf(stdout, "getfile :#%i %s %llu bytes\n", files[idx].index, files[idx].name, total_bytes);
 
 	filename = (char *)malloc(strlen(outdir) + strlen(files[idx].name) + 2);
 	if (filename == NULL)
@@ -659,7 +657,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 	else
 		sprintf(filename, "%s/%s", outdir, files[idx].name);
 
-	fprintf(stdout, "Fetching %s (%ld bytes)\n", files[idx].name, total_bytes);
+	fprintf(stdout, "Fetching %s (%llu bytes)\n", files[idx].name, total_bytes);
 	fd = fopen(filename, "wb");
 	if (fd == NULL)
 	{
@@ -684,25 +682,26 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 		return -1;
 	}
 
-	/* Total 4096-byte blocks */
+	/* Total 4096-byte blocks required */
 	total_blocks = (total_bytes + GET_BLOCK_SIZE - 1) / GET_BLOCK_SIZE;
 
 	while (blk_offset < total_blocks)
 	{
-		long int blocks_remaining = total_blocks - blk_offset;
-		blocks_to_req = (blocks_remaining < GET_BLOCKS_PER_XFER) ? blocks_remaining : GET_BLOCKS_PER_XFER;
+		blocks_remaining = total_blocks - blk_offset;
+		blocks_to_req = (blocks_remaining < GET_BLOCKS_PER_XFER) ? (int)blocks_remaining : GET_BLOCKS_PER_XFER;
 
-		/* Determine exact bytes to expect for this SCSI command */
-		if (blk_offset + blocks_to_req == total_blocks) {
-			/* Final chunk includes last block, size buffer to remaining file bytes */
-			bytes_to_read = total_bytes - bytes_written;
-		} else {
-			bytes_to_read = blocks_to_req * GET_BLOCK_SIZE;
-		}
+		/* ALWAYS request full block aligned size over SCSI DMA to prevent bus hangs */
+		bytes_to_read = (size_t)blocks_to_req * GET_BLOCK_SIZE;
+
+		/* Determine actual file payload bytes to extract from this chunk */
+		if (bytes_written + bytes_to_read > total_bytes)
+			bytes_to_write = (size_t)(total_bytes - bytes_written);
+		else
+			bytes_to_write = bytes_to_read;
 
 		memset(cmd, 0, sizeof(cmd));
 		cmd[0] = BLUESCSI_TOOLBOX_GET_FILE;
-		cmd[1] = idx;
+		cmd[1] = (unsigned char)(idx & 0xFF);
 		cmd[2] = (unsigned char)((blk_offset >> 24) & 0xFF);
 		cmd[3] = (unsigned char)((blk_offset >> 16) & 0xFF);
 		cmd[4] = (unsigned char)((blk_offset >>  8) & 0xFF);
@@ -710,17 +709,17 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 		cmd[6] = (unsigned char)(blocks_to_req & 0xFF);
 
 		memset(buf, 0, GET_BUF_SIZE);
-		ret = scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, bytes_to_read);
+		ret = scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, (int)bytes_to_read);
 		if (ret != 0)
 		{
-			fprintf(stderr, "Error: getfile failed during transfer at block %ld - %s\n", blk_offset, strerror(errno));
+			fprintf(stderr, "Error: getfile failed during transfer at block %llu - %s\n", blk_offset, strerror(errno));
 			fclose(fd);
 			free(buf);
 			free(filename);
 			return -1;
 		}
 
-		if (fwrite(buf, 1, bytes_to_read, fd) != (size_t)bytes_to_read)
+		if (fwrite(buf, 1, bytes_to_write, fd) != bytes_to_write)
 		{
 			fprintf(stderr, "Error: fwrite failed writing to %s\n", filename);
 			fclose(fd);
@@ -729,7 +728,7 @@ static int bluescsi_getfile(int dev, int idx, char *outdir)
 			return -1;
 		}
 
-		bytes_written += bytes_to_read;
+		bytes_written += bytes_to_write;
 		blk_offset += blocks_to_req;
 	}
 
@@ -992,7 +991,7 @@ static void do_drive(char *path, int mode, int verbose, int cd_img, int file, ch
 	else if (mode == MODE_SET_WDIR)
 		bluescsi_set_wdir(dev, outdir);
 	else if (mode == MODE_GET_LOG)
-		bluescsi_get_log(dev);
+		bluescsi_get_log(dev, outdir);
 	else if (file != NOT_ACTIVE)
 		bluescsi_getfile (dev, file, outdir);
 	else if (cd_img != NOT_ACTIVE)

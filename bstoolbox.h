@@ -41,7 +41,7 @@
 
 /* New File Transfer Transfer Constants */
 #define GET_BLOCK_SIZE         4096
-#define GET_BLOCKS_PER_XFER    16    /* Request 16 x 4KB = 64KB per GET command */
+#define GET_BLOCKS_PER_XFER    8
 #define GET_BUF_SIZE           (GET_BLOCK_SIZE * GET_BLOCKS_PER_XFER)
 
 #define SEND_BLOCK_SIZE        512

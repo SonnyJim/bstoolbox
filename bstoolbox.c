@@ -506,7 +506,7 @@ static int bluescsi_inquiry(int dev, int print)
 {
 	char cmd[] ={SCSI_INQUIRY, 0, 0, 0, sizeof(scsi_inquiry), 0};	
 	char buf[sizeof(scsi_inquiry)];
-	const char *BlueSCSI_ID = "BlueSCSI";
+	const char *BlueSCSI_vendor_id = "BLUESCSI";
 	scsi_inquiry inq;
 	int i;
 	char* dev_flags;
@@ -515,6 +515,8 @@ static int bluescsi_inquiry(int dev, int print)
 	int toolbox_api_version;
 
 	memset(buf, 0, sizeof(buf));
+	if (verbose)
+		fprintf(stdout, "Sending SCSI Inquiry command\n");
 	if (scsi_send_command(dev, (unsigned char *)cmd, sizeof(cmd), (unsigned char *)buf, sizeof(buf)) != 0)
 	{
 		fprintf (stderr, "Error: inquiry command failed - %s\n", strerror(errno));
@@ -528,15 +530,24 @@ static int bluescsi_inquiry(int dev, int print)
 	memcpy (&inq.product_id, &buf[16], sizeof(inq.product_id) - 1);
 	inq.product_id[16] = '\0';
 	memcpy (&inq.product_rev, &buf[32], sizeof(inq.product_rev) - 1);
-	inq.product_rev[32] = '\0';
-
+	inq.product_rev[4] = '\0';
+	
+	
 	if (verbose || print)
 	{
 		fprintf (stdout, "SCSI version: %i\n", inq.version);
 		fprintf (stdout, "vendor_id: %s \nproduct_id: %s\n", inq.vendor_id, inq.product_id);
 		fprintf (stdout, "product_rev: %s\n", inq.product_rev);
-		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev));
 	}
+	
+	//Do not proceed if it's not a BlueSCSI device
+	if (strstr (inq.vendor_id, BlueSCSI_vendor_id) == NULL)
+	{
+		fprintf (stderr, "Error: didn't find vendor_id \"%s\" in %s\n", BlueSCSI_vendor_id, inq.vendor_id);
+		return 1;
+	}
+	else if (verbose || print)
+		fprintf (stdout, "debug mode: %i\n", bluescsi_getdebug(dev)); //Don't try to get debug mode if it isn't a BlueSCSI
 
 	additional_len = buf[4];
 	total_len = additional_len + 5;
@@ -570,14 +581,7 @@ static int bluescsi_inquiry(int dev, int print)
 		fprintf (stderr, "Failed to fetch device flags with bluescsi_listdevices(): %s\n", strerror(errno));
 		return 1;
 	}
-
-	if (strstr (inq.product_rev, BlueSCSI_ID) != NULL)
-		return 0;
-	else
-	{
-		fprintf (stderr, "Error: didn't find ID %s in product_rev\n", BlueSCSI_ID);
-		return 1;
-	}
+	return 0;
 }
 
 static void do_drive(char *path, int list, int verbose, int cd_img, int file, char *outdir)

@@ -8,6 +8,9 @@ int verbose = 0;
 ToolboxFileEntry files[MAX_FILES];
 int files_count = 0;
 
+static int bluescsi_listfiles(int dev, int print);
+static int bluescsi_getfile(int dev, int idx, char *outdir);
+
 static unsigned long long size_to_long(const unsigned char size[5])
 {
         int i;

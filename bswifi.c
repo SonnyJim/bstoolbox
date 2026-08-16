@@ -451,6 +451,8 @@ static int
 check_scsi_inquiry(int dev)
 {
     struct scsi_inquiry_response inq;
+    const char *dp_vendor_id = "Dayna";
+    const char *dp_product_id = "SCSI/Link";
     unsigned char cdb_inq[6] = { 0x12, 0x00, 0x00, 0x00, sizeof(inq), 0x00 };
     char vendor[9];
     char product[17];
@@ -462,8 +464,8 @@ check_scsi_inquiry(int dev)
     if (ret != 0)
     {
         if (verbose)
-            fprintf(stderr, "check_wifi_capabilities: INQUIRY command failed (ret=%d)\n", ret);
-        return 0;
+            fprintf(stderr, "check_scsi_inquiry: INQUIRY command failed (ret=%d)\n", ret);
+        return 1;
     }
 
     memcpy(vendor, inq.vendor_id, 8);
@@ -474,12 +476,12 @@ check_scsi_inquiry(int dev)
     if (verbose)
         fprintf(stdout, "SCSI INQUIRY Vendor: \"%s\", Product: \"%s\"\n", vendor, product);
 
-    if (memcmp(vendor, "Dayna", 5) != 0 || memcmp(product, "SCSI/Link", 9) != 0)
+    if (memcmp(vendor, dp_vendor_id, sizeof(dp_vendor_id)) != 0 || memcmp(product, dp_product_id, sizeof(dp_product_id)) != 0)
     {
         fprintf(stderr, "Device is not a DaynaPort SCSI/Link adapter: %s %s\n", vendor, product);
-        return 0;
+        return 1;
     }
-    return 1;
+    return 0;
 }
 
 /*
@@ -542,6 +544,7 @@ main(int argc, char *argv[])
 
     if (argc < 2)
     {
+	fprintf (stderr, "Error: not enough parameters given\n");
         usage();
         return 1;
     }
@@ -567,7 +570,7 @@ main(int argc, char *argv[])
         return 1;
     }
 
-    if (!check_scsi_inquiry(dev))
+    if (check_scsi_inquiry(dev) != 0)
     {
         fprintf(stderr, "Couldn't find wifi capabilities on %s\n", device);
         scsi_close(dev);

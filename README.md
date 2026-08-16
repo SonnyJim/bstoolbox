@@ -12,11 +12,9 @@ NixOS
 
 ## bstoolbox Usage
 ```
-Please specify device ("/dev/scsi/..."
-
 Usage:   bstoolbox [options] [device]
 
-Example: bstoolbox -s /dev/scsi/sc0d1l0
+example: bstoolbox -s /dev/scsi/sc0d1l0
 
 Options:
         -h      : display this help message and exit
@@ -28,10 +26,14 @@ Options:
         -g num  : get file from shared directory (1, 2, etc)
         -p file : put file to shared directory
         -o dir  : set output directory, defaults to current
+        -w      : get current working directory
+        -W dir  : set working directory
+        -L      : Show BlueSCSI log
         -d num  : set debug mode (0 = off, 1 - on)
 
 
 Please make sure you run the program as root.
+
 ```
 
 ## bswifi Usage

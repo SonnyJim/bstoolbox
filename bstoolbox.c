@@ -8,16 +8,15 @@ int verbose = 0;
 ToolboxFileEntry files[MAX_FILES];
 int files_count = 0;
 
-/* Helper function to convert 40bit size into a long */
-static long long int size_to_long(const unsigned char size[5])
+static unsigned long long size_to_long(const unsigned char size[5])
 {
-	int i;
-	long int result = 0;
-	for (i = 0; i < 5; i++)
-	{
-		result = (result << 8) | size[i];
-	}
-	return result;
+        int i;
+        unsigned long long result = 0;
+        for (i = 0; i < 5; i++)
+        {
+                result = (result << 8) | size[i];
+        }
+        return result;
 }
 
 /*
@@ -180,13 +179,102 @@ static int bluescsi_set_wdir (int dev, char *outdir)
 	return bluescsi_metadata_set_working_dir (dev, outdir);
 }
 
-static int bluescsi_get_log (int dev)
+static int bluescsi_get_log(int dev)
 {
-	fprintf (stderr, "Not implemented\n");
-	return 1;
+	char *orig_wdir = NULL;
+	char orig_filename[sizeof(files[0].name)];
+	int log_idx = -1;
+	int i;
+	int ret = 0;
+	FILE *fd;
+	int ch;
 
+	/* 1. Get and store original working directory */
+	orig_wdir = bluescsi_metadata_get_working_dir(dev);
+	if (orig_wdir == NULL)
+	{
+		fprintf(stderr, "Error: get_log couldn't determine original working directory\n");
+		return -1;
+	}
+
+	/* 2. Change working directory to root ("/") */
+	if (bluescsi_metadata_set_working_dir(dev, "/") != 0)
+	{
+		fprintf(stderr, "Error: get_log couldn't change working directory to root\n");
+		free(orig_wdir);
+		return -1;
+	}
+
+	/* 3. List files in root directory to locate "log.txt" */
+	if (bluescsi_listfiles(dev, PRINT_OFF) != 0)
+	{
+		fprintf(stderr, "Error: get_log failed to list root directory files\n");
+		ret = -1;
+		goto restore_wdir;
+	}
+
+	for (i = 0; i < files_count; i++)
+	{
+		if (strcasecmp(files[i].name, "log.txt") == 0)
+		{
+			log_idx = files[i].index;
+			break;
+		}
+	}
+
+	if (log_idx == -1)
+	{
+		fprintf(stderr, "Error: log.txt not found in root directory\n");
+		ret = -1;
+		goto restore_wdir;
+	}
+
+	/* Temporarily rename in memory so bluescsi_getfile writes directly to /tmp/BlueSCSI.log */
+	strncpy(orig_filename, files[log_idx].name, sizeof(orig_filename));
+	strncpy(files[log_idx].name, "BlueSCSI.log", sizeof(files[log_idx].name) - 1);
+	files[log_idx].name[sizeof(files[log_idx].name) - 1] = '\0';
+
+	/* 4. Download directly into "/tmp/BlueSCSI.log" */
+	if (bluescsi_getfile(dev, log_idx, "/tmp") != 0)
+	{
+		fprintf(stderr, "Error: get_log failed to fetch log.txt\n");
+		strncpy(files[log_idx].name, orig_filename, sizeof(files[log_idx].name));
+		ret = -1;
+		goto restore_wdir;
+	}
+
+	/* Restore original array entry name */
+	strncpy(files[log_idx].name, orig_filename, sizeof(files[log_idx].name));
+
+	/* 5. Print /tmp/BlueSCSI.log contents to stdout */
+	fd = fopen("/tmp/BlueSCSI.log", "r");
+	if (fd == NULL)
+	{
+		fprintf(stderr, "Error: get_log couldn't open fetched log file /tmp/BlueSCSI.log\n");
+		ret = -1;
+		goto restore_wdir;
+	}
+
+	while ((ch = fgetc(fd)) != EOF)
+	{
+		fputc(ch, stdout);
+	}
+	fclose(fd);
+
+	/* Clean up temporary log file */
+	unlink("/tmp/BlueSCSI.log");
+
+restore_wdir:
+	/* 6. Restore original working directory */
+	if (bluescsi_metadata_set_working_dir(dev, orig_wdir) != 0)
+	{
+		fprintf(stderr, "Warning: failed to restore working directory to %s\n", orig_wdir);
+		ret = -1;
+	}
+
+	free(orig_wdir);
+	return ret;
 }
-
 /*
  * Sending Files (Host -> BlueSCSI / shared)
  */

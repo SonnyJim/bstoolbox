@@ -3,3 +3,4 @@ Quirks=0
 EnableSCSI2=0
 SpeedGrade="TurboMax"
 MaxSyncSpeed=10
+Parity=1

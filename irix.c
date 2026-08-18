@@ -14,6 +14,10 @@
 #define INV_PERIPH 9
 #endif
 
+#define MAX_READY_RETRIES 10
+#define SENSE_BUF_LEN     64
+#define STATUS_CHECKCOND  0x02
+
 extern int verbose;
 
 int mediad_start(void) {
@@ -74,59 +78,128 @@ int scsi_close(int dev)
     return close(dev);
 }
 
-int scsi_send_command(int dev, unsigned char *cmd, int cmd_len, unsigned char *buf, int buf_len)
-{
-    int i;
-    int try;
-    dsreq_t r;
-    memset(&r, 0, sizeof(dsreq_t));
-    
-    r.ds_cmdbuf   = (caddr_t) cmd;
-    r.ds_cmdlen   = cmd_len;
-    r.ds_databuf  = (caddr_t) buf;
-    r.ds_datalen  = buf_len;
-    r.ds_sensebuf = NULL;
-    r.ds_senselen = 0;
-    r.ds_time     = 5 * 1000;
-    
-    /* Only set DSRQ_READ if receiving actual payload data */
-    if (buf != NULL && buf_len > 0) {
-        r.ds_flags = DSRQ_READ;
-    } else {
-        r.ds_flags = 0;
-    }
-    
-    if (verbose){
-        fprintf(stdout, "Sending SCSI command: ");
-        for (i = 0; i < cmd_len; ++i) {
-            fprintf(stdout, "%02x ", (unsigned char)r.ds_cmdbuf[i]);
-        }
-        fprintf(stdout, "\n");
-    }	
-
-    for (try = 0; try < 10; try++){
-        if (ioctl(dev, DS_ENTER, &r) < 0 || r.ds_status != 0){
-            fprintf(stderr, "WARNING: SCSI command failed/timed out (%d); retrying...\n", r.ds_status);
-            sleep(try + 1);
-        }
-        else
-            break;
-        if (try >= 9){
-            fprintf(stderr, "ERROR: Unable to send SCSI command (%d)\n", r.ds_status);
-            return 1;
-        }
-    }
-    return 0;
-}
-
 #define MAX_READY_RETRIES 10
 #define SENSE_BUF_LEN 64
 #define STATUS_CHECKCOND 0x02
 
+/*
+ * Execute a SCSI command with the specified data direction.
+ *
+ * direction should be:
+ *     DSRQ_READ   Device -> host
+ *     DSRQ_WRITE  Host -> device
+ *
+ * Returns:
+ *      0       success
+ *     -errno   ioctl failure
+ *     -EIO     SCSI CHECK CONDITION / other SCSI error
+ */
+static int scsi_send_command_dir(int dev,
+                                 unsigned char *cmd,
+                                 int cmd_len,
+                                 unsigned char *buf,
+                                 int buf_len,
+                                 int direction)
+{
+    int i;
+    int err;
+    dsreq_t r;
+    unsigned char sense_data[SENSE_BUF_LEN];
+
+    if (!cmd || cmd_len <= 0)
+        return -EINVAL;
+
+    if (buf_len < 0)
+        return -EINVAL;
+
+    if (buf_len > 0 && !buf)
+        return -EINVAL;
+
+    memset(&r, 0, sizeof(dsreq_t));
+    memset(sense_data, 0, sizeof(sense_data));
+
+    r.ds_cmdbuf   = (caddr_t)cmd;
+    r.ds_cmdlen   = cmd_len;
+    r.ds_databuf  = (caddr_t)buf;
+    r.ds_datalen  = buf_len;
+
+    /*
+     * ds_senselen is a u_char on IRIX, so do not use a
+     * 256-byte sense buffer here: (u_char)256 == 0.
+     */
+    r.ds_sensebuf = (caddr_t)sense_data;
+    r.ds_senselen = sizeof(sense_data);
+
+    r.ds_time = 30 * 1000;
+
+    /*
+     * Always request sense information.  Add the requested
+     * data direction only when there is actually data.
+     */
+    r.ds_flags = DSRQ_SENSE;
+
+    if (buf != NULL && buf_len > 0)
+        r.ds_flags |= direction;
+
+    if (verbose) {
+        fprintf(stdout, "Sending SCSI %s command: ",
+                direction == DSRQ_WRITE ? "write" : "read");
+
+        for (i = 0; i < cmd_len; ++i)
+            fprintf(stdout, "%02x ", (unsigned char)cmd[i]);
+
+        fprintf(stdout, "\n");
+    }
+
+    if (ioctl(dev, DS_ENTER, &r) != 0) {
+        err = errno;
+
+        if (verbose)
+            fprintf(stderr, "DS_ENTER failed: %s\n", strerror(err));
+
+        return -err;
+    }
+
+    if (r.ds_status == STATUS_CHECKCOND) {
+        fprintf(stderr, "SCSI CHECK CONDITION\n");
+
+        /*
+         * Fixed format sense data has ASC/ASCQ at bytes 12/13.
+         */
+        if (r.ds_senselen >= 14) {
+            unsigned char key  = sense_data[2] & 0x0F;
+            unsigned char asc  = sense_data[12];
+            unsigned char ascq = sense_data[13];
+
+            fprintf(stderr,
+                    "Sense Key: 0x%02x, ASC: 0x%02x, ASCQ: 0x%02x\n",
+                    key, asc, ascq);
+        }
+
+        return -EIO;
+    }
+
+    if (r.ds_status != 0) {
+        fprintf(stderr,
+                "SCSI command failed, status: 0x%02x\n",
+                r.ds_status);
+
+        return -EIO;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Wait until the SCSI device reports that it is ready.
+ */
 static int scsi_wait_until_ready(int dev)
 {
     dsreq_t tur;
-    unsigned char tur_cmd[6] = { 0x00, 0, 0, 0, 0, 0 };  // TEST UNIT READY
+    unsigned char tur_cmd[6] = {
+        0x00, 0, 0, 0, 0, 0
+    };
     unsigned char sense_data[SENSE_BUF_LEN];
     int i;
 
@@ -134,89 +207,89 @@ static int scsi_wait_until_ready(int dev)
         memset(&tur, 0, sizeof(dsreq_t));
         memset(sense_data, 0, sizeof(sense_data));
 
-        tur.ds_cmdbuf = (caddr_t) tur_cmd;
-        tur.ds_cmdlen = sizeof(tur_cmd);
-        tur.ds_databuf = NULL;
-        tur.ds_datalen = 0;
-        tur.ds_sensebuf = (caddr_t) sense_data;
+        tur.ds_cmdbuf   = (caddr_t)tur_cmd;
+        tur.ds_cmdlen   = sizeof(tur_cmd);
+        tur.ds_databuf  = NULL;
+        tur.ds_datalen  = 0;
+        tur.ds_sensebuf = (caddr_t)sense_data;
         tur.ds_senselen = sizeof(sense_data);
-        tur.ds_time = 1000;
-        tur.ds_flags = DSRQ_SENSE; /* Pure sense flag, no READ/WRITE for 0-byte TUR */
+        tur.ds_time     = 1000;
+        tur.ds_flags    = DSRQ_SENSE;
 
         if (ioctl(dev, DS_ENTER, &tur) == 0) {
-            if (tur.ds_status == 0) {
-                return 0;  // Device ready
-            } else if (tur.ds_status == STATUS_CHECKCOND) {
+            if (tur.ds_status == 0)
+                return 0;
+
+            if (tur.ds_status == STATUS_CHECKCOND) {
                 if (verbose) {
-                    fprintf(stderr, "SCSI CHECK CONDITION on TUR, sense key: 0x%02x\n", sense_data[2] & 0x0F);
+                    fprintf(stderr,
+                            "SCSI CHECK CONDITION on TUR, "
+                            "sense key: 0x%02x\n",
+                            sense_data[2] & 0x0F);
                 }
+            } else if (verbose) {
+                fprintf(stderr,
+                        "TEST UNIT READY returned status: 0x%02x\n",
+                        tur.ds_status);
             }
         } else {
-            if (verbose) {
+            if (verbose)
                 perror("TEST UNIT READY ioctl failed");
-            }
         }
 
-        usleep(100000); // 100ms delay
+        usleep(100000);
     }
 
-    return -1;
+    return -ETIMEDOUT;
 }
 
-int scsi_send_commandw(int dev, unsigned char *cmd, int cmd_len, unsigned char *buf, int buf_len)
+/*
+ * Send a SCSI command which reads data from the device.
+ */
+int scsi_send_command(int dev,
+                      unsigned char *cmd,
+                      int cmd_len,
+                      unsigned char *buf,
+                      int buf_len)
 {
-    int i;
-    dsreq_t r;
-    unsigned char sense_data[256];
-
-    if (scsi_wait_until_ready(dev) != 0) {
-        fprintf(stderr, "Device not ready, aborting transfer\n");
-        return -1;
-    }
-
-    memset(&r, 0, sizeof(dsreq_t));
-    memset(sense_data, 0, sizeof(sense_data));
-
-    r.ds_cmdbuf   = (caddr_t) cmd;
-    r.ds_cmdlen   = cmd_len;
-    r.ds_databuf  = (caddr_t) buf;
-    r.ds_datalen  = buf_len;
-    r.ds_sensebuf = (caddr_t) sense_data;
-    r.ds_senselen = (u_char) sizeof(sense_data);
-    r.ds_time     = 30 * 1000;
-    
-    if (buf != NULL && buf_len > 0) {
-        r.ds_flags = DSRQ_WRITE | DSRQ_SENSE;
-    } else {
-        r.ds_flags = DSRQ_SENSE;
-    }
-
-    if (verbose) {
-        fprintf(stdout, "Sending SCSI write command: ");
-        for (i = 0; i < cmd_len; ++i)
-            fprintf(stdout, "%02x ", (unsigned char)r.ds_cmdbuf[i]);
-        fprintf(stdout, "\n");
-    }
-
-    if (ioctl(dev, DS_ENTER, &r) != 0) {
-        perror("ioctl failed");
-        return -errno;
-    }
-
-    if (r.ds_status == STATUS_CHECKCOND) {
-        fprintf(stderr, "SCSI CHECK CONDITION\n");
-        if (r.ds_senselen >= 14) {
-            unsigned char key = sense_data[2] & 0x0F;
-            unsigned char asc = sense_data[12];
-            unsigned char ascq = sense_data[13];
-            fprintf(stderr, "Sense Key: 0x%02x, ASC: 0x%02x, ASCQ: 0x%02x\n", key, asc, ascq);
-        }
-        return -EIO;
-    }
-
-    return 0;
+    return scsi_send_command_dir(dev,
+                                 cmd,
+                                 cmd_len,
+                                 buf,
+                                 buf_len,
+                                 DSRQ_READ);
 }
 
+
+/*
+ * Send a SCSI command which writes data to the device.
+ *
+ * This retains the existing TEST UNIT READY check before
+ * performing the write.
+ */
+int scsi_send_commandw(int dev,
+                       unsigned char *cmd,
+                       int cmd_len,
+                       unsigned char *buf,
+                       int buf_len)
+{
+    int ret;
+
+    ret = scsi_wait_until_ready(dev);
+
+    if (ret != 0) {
+        fprintf(stderr,
+                "Device not ready, aborting transfer\n");
+        return ret;
+    }
+
+    return scsi_send_command_dir(dev,
+                                 cmd,
+                                 cmd_len,
+                                 buf,
+                                 buf_len,
+                                 DSRQ_WRITE);
+}
 int path_to_devnum(const char *path) {
     int dev_path_num;
 

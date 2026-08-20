@@ -1,7 +1,7 @@
 # BlueSCSI toolbox for SGI IRIX and Linux
 Download files and run 'make', it should spit out a bstoolbox and bswifi binary.  Currently tested on the following platforms:
 
-IRIX 6.5 ([Daynaport driver](https://github.com/techomancer/irixdayna))
+IRIX 6.5 ([Daynaport driver by Technomancer](https://github.com/techomancer/irixdayna), [bstoolbox GUI by Danifunker](https://github.com/danifunker/irixscsitb))
 
 Linux Mint 22  ([Daynaport driver](https://github.com/jflitton/daynaport-scsilink-linux-driver))
 

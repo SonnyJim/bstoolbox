@@ -181,6 +181,42 @@ static int bluescsi_set_wdir (int dev, char *outdir)
 {
 	return bluescsi_metadata_set_working_dir (dev, outdir);
 }
+
+/*
+ * Subcommand 0x04 - Remove File
+ */
+static int bluescsi_remove_file(int dev, int file_num)
+{
+	unsigned char cmd[10];
+
+	if (verbose)
+		fprintf(stdout, "Removing file number: %d\n", file_num);
+
+	if (file_num < 0 || file_num > 255)
+	{
+		fprintf(stderr, "Error: file number %d out of range (0-255)\n", file_num);
+		return -1;
+	}
+
+	memset(cmd, 0, sizeof(cmd));
+	cmd[0] = BLUESCSI_TOOLBOX_METADATA;
+	cmd[1] = BLUESCSI_TOOLBOX_METADATA_REMOVE_FILE;
+	cmd[8] = (unsigned char)file_num;
+
+	if (scsi_send_command(dev, cmd, sizeof(cmd), NULL, 0) != 0)
+	{
+		fprintf(stderr, "Error: metadata remove_file failed - %s\n", strerror(errno));
+		return -1;
+	}
+
+	if (verbose)
+		fprintf(stdout, "File #%d successfully removed.\n", file_num);
+
+	return 0;
+}
+
+/* Helper function that stores the current working dir, 
+ * switches to / and grabs the log */
 static int bluescsi_get_log(int dev, const char *outdir)
 {
 	char *orig_wdir = NULL;
@@ -990,6 +1026,8 @@ static void do_drive(char *path, int mode, int verbose, int cd_img, int file, ch
 		bluescsi_print_wdir(dev);
 	else if (mode == MODE_SET_WDIR)
 		bluescsi_set_wdir(dev, outdir);
+	else if (mode == MODE_REMOVE_FILE)
+		bluescsi_remove_file(dev, file);
 	else if (mode == MODE_GET_LOG)
 		bluescsi_get_log(dev, outdir);
 	else if (file != NOT_ACTIVE)
@@ -1025,6 +1063,7 @@ static void usage(void)
 	fprintf(stderr, "\t-o dir  : set output directory, defaults to current\n");
 	fprintf(stderr, "\t-w      : get current working directory\n");
 	fprintf(stderr, "\t-W dir  : set working directory\n");
+	fprintf(stderr, "\t-D num  : remove file by number from working directory\n");
 	fprintf(stderr, "\t-L      : Show BlueSCSI log\n");
 	fprintf(stderr, "\t-d num  : set debug mode (0 = off, 1 - on)\n");
 	fprintf(stderr, "\n\nPlease make sure you run the program as root.\n");
@@ -1049,7 +1088,7 @@ int main(int argc, char *argv[])
 
 	/* Start parsing options from argv[2] onwards */
 	optind = 2;
-	while ((c = getopt(argc, argv, "hvlsic:d:g:o:p:wW:L")) != -1) switch (c) {
+	while ((c = getopt(argc, argv, "hvlsic:d:D:g:o:p:wW:L")) != -1) switch (c) {
 		case 'c':
 			cdimg = atoi(optarg);
 			break;
@@ -1074,6 +1113,10 @@ int main(int argc, char *argv[])
 			break;
 		case 'd':
 			mode = MODE_DEBUG;
+			file = atoi(optarg);
+			break;
+		case 'D':
+			mode = MODE_REMOVE_FILE;
 			file = atoi(optarg);
 			break;
 		case 'w':
